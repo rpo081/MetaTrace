@@ -407,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     dst_files = scan_tree(dst, dst_stats, images_only=False) if dst.exists() else {}
 
     actions = plan_sync(src_files, dst_files, args.prune)
+    stats.skipped = sum(1 for a in actions if a.kind == "skip")
     execute(src, dst, actions, args.threads, args.dry_run, args.verbose, stats,
             prune=args.prune)
     stats.failed += dst_stats.failed  # propagate destination scan errors

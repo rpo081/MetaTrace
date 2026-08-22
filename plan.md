@@ -69,7 +69,7 @@ exact-match badge, detail panel (large thumb, original path, XMP tag table),
 k slider, min-score filter, stats bar + manual rescan button.
 
 ### 4. Docker
-- Multi-stage: `node:20-slim` builds frontend → `python:3.11-slim` runtime with
+- Multi-stage: `node:20-slim` builds frontend → `python:3.12-slim` runtime with
   `libimage-exiftool-perl`; CPU-only torch wheels; CLIP weights baked at build.
 - FastAPI serves built static frontend from `/`.
 - Volumes: image store read-only (`/store`), writable `/data` (SQLite + FAISS + thumbs).
@@ -88,7 +88,7 @@ k slider, min-score filter, stats bar + manual rescan button.
 | STORE_PATH | /store | local image mirror (read-only in container) |
 | DATA_PATH | /data | SQLite + FAISS + thumbs |
 | NETWORK_ROOT | — | e.g. `\\nas\share\renderings`; derives original_path |
-| MODEL_NAME / MODEL_PRETRAINED | ViT-B-32 / openai | CLIP variant |
+| MODEL_NAME / MODEL_PRETRAINED | ViT-B-32-quickgelu / openai | CLIP variant |
 | BATCH_SIZE | 64 | embed batch size |
 | RESCAN_INTERVAL_MIN | 30 | periodic rescan interval |
 | RUN_INITIAL_SCAN_ON_START | true | scan on startup when index empty |

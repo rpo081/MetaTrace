@@ -16,5 +16,7 @@ pillow==12.3.0
 psd-tools==1.18.0
 open_clip_torch==3.3.0
 torch==2.13.0
+# Never imported directly, but a hard transitive dep of open_clip_torch; the
+# exact pin keeps its wheel resolution on the cpu index (same trick as torch).
 torchvision==0.28.0
 faiss-cpu==1.15.0

@@ -2,13 +2,8 @@
 from __future__ import annotations
 
 import hashlib
-import logging
-
-import numpy as np
 
 from . import db, embeddings
-
-log = logging.getLogger(__name__)
 
 
 class SearchService:

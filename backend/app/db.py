@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS images (
     xmp           TEXT NOT NULL DEFAULT '{}',
     indexed_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-CREATE INDEX IF NOT EXISTS idx_images_sha256 ON images(sha256);
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -126,14 +125,6 @@ def _fetch_all(db_path: Path, ids: Sequence[int]) -> list[sqlite3.Row]:
         return conn.execute(
             f"SELECT * FROM images WHERE id IN ({placeholders})", tuple(int(i) for i in ids)
         ).fetchall()
-
-
-def find_id_by_sha(db_path: Path, sha256: str) -> int | None:
-    with closing(connect(db_path)) as conn:
-        row = conn.execute(
-            "SELECT id FROM images WHERE sha256 = ? LIMIT 1", (sha256,)
-        ).fetchone()
-    return int(row["id"]) if row else None
 
 
 def count(db_path: Path) -> int:

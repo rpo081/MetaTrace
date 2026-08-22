@@ -48,16 +48,6 @@ export async function getStats(signal?: AbortSignal): Promise<Stats> {
 /** localStorage key holding the admin token sent as X-Admin-Token. */
 const ADMIN_TOKEN_KEY = 'metatrace_admin_token'
 
-/** Store the admin token (e.g. from the browser console) for mutating calls. */
-export function setAdminToken(token: string): void {
-  localStorage.setItem(ADMIN_TOKEN_KEY, token)
-}
-
-/** Remove the stored admin token (back to trusted-LAN behavior). */
-export function clearAdminToken(): void {
-  localStorage.removeItem(ADMIN_TOKEN_KEY)
-}
-
 function getAdminToken(): string | null {
   try {
     return localStorage.getItem(ADMIN_TOKEN_KEY)

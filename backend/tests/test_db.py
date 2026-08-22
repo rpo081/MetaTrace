@@ -24,9 +24,6 @@ def test_upsert_and_fetch(tmp_path):
 
     assert json.loads(rows[1]["xmp"]) == {}
 
-    assert db.find_id_by_sha(p, "cc") == i1
-    assert db.find_id_by_sha(p, "zz") is None
-
     db.remove_ids(p, [i1])
     assert db.count(p) == 1
 
