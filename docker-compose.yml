@@ -1,0 +1,28 @@
+services:
+  metatrace:
+    build: .
+    image: metatrace:latest
+    container_name: metatrace
+    ports:
+      - "${METATRACE_PORT:-8000}:8000"
+    environment:
+      STORE_PATH: /store
+      DATA_PATH: /data
+      NETWORK_ROOT: ${NETWORK_ROOT:-}
+      RESCAN_INTERVAL_MIN: ${RESCAN_INTERVAL_MIN:-30}
+      RUN_INITIAL_SCAN_ON_START: ${RUN_INITIAL_SCAN_ON_START:-true}
+      DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
+      # Mutating-endpoint guard (X-Admin-Token header); empty = trusted-LAN mode.
+      METATRACE_ADMIN_TOKEN: ${METATRACE_ADMIN_TOKEN:-}
+      # Extra CORS origins (comma-separated); empty = no CORS middleware.
+      METATRACE_CORS_ORIGINS: ${METATRACE_CORS_ORIGINS:-}
+    volumes:
+      # Local SSD mirror of the network share (target of scripts/sync_images.py).
+      # Mounted read-only; the app never writes here.
+      - ${LOCAL_IMAGE_STORE:?Set LOCAL_IMAGE_STORE in .env}:/store:ro
+      # SQLite database, FAISS index, thumbnail cache.
+      - metatrace-data:/data
+    restart: unless-stopped
+
+volumes:
+  metatrace-data:

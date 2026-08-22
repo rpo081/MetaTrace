@@ -1,0 +1,31 @@
+# Keep the build context lean; never ship local state or secrets into images.
+.git
+.gitignore
+.venv
+.env
+.env.*
+!.env.example
+
+# Python caches
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Node / frontend build artifacts (rebuilt inside stage 1)
+node_modules
+frontend/node_modules
+frontend/dist
+
+# Agent / tooling state
+.agents
+.opencode
+skills-lock.json
+
+# Docs and working notes (not needed in the image)
+*.md
+!README.md
+
+# OS noise
+.DS_Store

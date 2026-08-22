@@ -1,0 +1,272 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ApiError, getStats, searchImage, triggerRescan } from './api'
+import Dropzone from './components/Dropzone'
+import DetailPanel from './components/DetailPanel'
+import ResultGrid from './components/ResultGrid'
+import type { ScanReport, SearchResponse, SearchResult, Stats } from './types'
+
+function fmtDuration(sec: number): string {
+  return sec >= 10 ? `${Math.round(sec)}s` : `${Math.round(sec * 10) / 10}s`
+}
+
+function ScanReportLine({ report }: { report: ScanReport }) {
+  return (
+    <div className="scan-report" role="status">
+      <span className="scan-report-label">Last scan ({report.trigger})</span>
+      <span className="mono">
+        +{report.added} added · {report.updated} updated · −{report.removed} removed ·{' '}
+        {report.failed} failed · {fmtDuration(report.duration_sec)}
+      </span>
+    </div>
+  )
+}
+
+export default function App() {
+  const [stats, setStats] = useState<Stats | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [k, setK] = useState(5)
+  const [minScore, setMinScore] = useState(0.0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [response, setResponse] = useState<SearchResponse | null>(null)
+  const [selected, setSelected] = useState<SearchResult | null>(null)
+
+  const abortRef = useRef<AbortController | null>(null)
+  const previewUrlRef = useRef<string | null>(null)
+
+  const refreshStats = useCallback(() => {
+    getStats().then(setStats).catch(() => {})
+  }, [])
+
+  useEffect(refreshStats, [refreshStats])
+  useEffect(() => {
+    const t = setInterval(refreshStats, 10_000)
+    return () => clearInterval(t)
+  }, [refreshStats])
+  // Fast-poll while a scan is active: short scans would otherwise look
+  // stalled for up to one 10 s interval before the UI notices completion.
+  useEffect(() => {
+    if (stats?.state !== 'scanning') return
+    const t = setInterval(refreshStats, 1_000)
+    return () => clearInterval(t)
+  }, [stats?.state, refreshStats])
+  // A finished scan retires the transient "Rescan started." notice.
+  const wasScanningRef = useRef(false)
+  useEffect(() => {
+    const scanning = stats?.state === 'scanning'
+    const wasScanning = wasScanningRef.current
+    wasScanningRef.current = scanning
+    if (wasScanning && !scanning) {
+      setNotice((n) => (n === 'Rescan started.' ? null : n))
+    }
+  }, [stats?.state])
+
+  // Track latest values for unmount cleanup without re-registering the effect.
+  useEffect(() => {
+    previewUrlRef.current = previewUrl
+  }, [previewUrl])
+  useEffect(
+    () => () => {
+      abortRef.current?.abort()
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    },
+    [],
+  )
+
+  const onFile = useCallback(
+    (f: File) => {
+      // Client-side size pre-check; backend enforces the same limit (413).
+      const maxMb = stats?.max_upload_mb
+      if (maxMb != null && f.size > maxMb * 1024 * 1024) {
+        setError(`"${f.name}" exceeds the ${maxMb} MiB upload limit.`)
+        return
+      }
+      setError(null)
+      setNotice(null)
+      setFile(f)
+      if (previewUrl) URL.revokeObjectURL(previewUrl) // blob URL hygiene
+      setPreviewUrl(URL.createObjectURL(f))
+    },
+    [stats?.max_upload_mb, previewUrl],
+  )
+
+  const runSearch = useCallback(async () => {
+    if (!file) return
+    abortRef.current?.abort() // kill any in-flight search (stale-response race)
+    const controller = new AbortController()
+    abortRef.current = controller
+    setLoading(true)
+    setError(null)
+    setNotice(null)
+    setSelected(null)
+    try {
+      const res = await searchImage(file, k, minScore, controller.signal)
+      setResponse(res)
+    } catch (e) {
+      if (controller.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) {
+        return // superseded by a newer search — leave state alone
+      }
+      setError(e instanceof Error ? e.message : String(e))
+      setResponse(null)
+    } finally {
+      if (abortRef.current === controller) {
+        setLoading(false)
+        refreshStats()
+      }
+    }
+  }, [file, k, minScore, refreshStats])
+
+  const rescan = useCallback(
+    async (rebuild: boolean) => {
+      try {
+        await triggerRescan(rebuild)
+        setError(null)
+        setNotice('Rescan started.')
+        refreshStats() // flip to "scanning" immediately, don't wait for the 10 s tick
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          setNotice('A scan is already running.') // not an error
+        } else {
+          setNotice(null)
+          setError(e instanceof Error ? e.message : String(e))
+        }
+      }
+      setTimeout(refreshStats, 500)
+    },
+    [refreshStats],
+  )
+
+  const scanning = stats?.state === 'scanning'
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <h1>MetaTrace</h1>
+        <div className="topbar-stats">
+          {stats ? (
+            <>
+              <span className={`pill ${scanning ? 'pill-busy' : ''}`}>
+                {scanning ? 'scanning…' : `${stats.indexed} indexed`}
+              </span>
+              <span className="muted">{stats.model}</span>
+              {!stats.exiftool && (
+                <span
+                  className="pill pill-warn"
+                  title="exiftool is not installed on the server, so embedded XMP tags cannot be shown. Install it (e.g. brew install exiftool) and trigger a rescan."
+                >
+                  exiftool missing · no XMP
+                </span>
+              )}
+              <button
+                className="btn"
+                onClick={() => rescan(false)}
+                disabled={scanning}
+                title={scanning ? 'A scan is already running' : 'Incremental rescan'}
+              >
+                Rescan
+              </button>
+            </>
+          ) : (
+            <span className="muted">connecting…</span>
+          )}
+        </div>
+      </header>
+
+      {stats?.last_report && <ScanReportLine report={stats.last_report} />}
+
+      <main className="layout">
+        <section className="sidebar">
+          <Dropzone previewUrl={previewUrl} onFile={onFile} disabled={loading} />
+
+          <div className="controls">
+            <label className="control">
+              <span>
+                Results <b>{k}</b>
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                step={1}
+                value={k}
+                disabled={loading}
+                onChange={(e) => setK(Number(e.target.value))}
+              />
+            </label>
+            <label className="control">
+              <span>
+                Min score <b>{Math.round(minScore * 100)}%</b>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={0.95}
+                step={0.05}
+                value={minScore}
+                disabled={loading}
+                onChange={(e) => setMinScore(Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <button className="btn btn-primary" onClick={runSearch} disabled={!file || loading}>
+            {loading ? 'Searching…' : 'Search'}
+          </button>
+
+          {error && (
+            <div className="error-box" role="alert">
+              {error}
+            </div>
+          )}
+          {notice && (
+            <div className="info-box" role="status">
+              {notice}
+            </div>
+          )}
+        </section>
+
+        <section className="content">
+          {loading && (
+            <div className="busy-overlay" role="status" aria-live="polite">
+              <span className="spinner" aria-hidden />
+              Searching…
+            </div>
+          )}
+          {response ? (
+            <>
+              <p className="result-meta muted">
+                {response.results.length} of {response.total_indexed} indexed images
+                {response.exact_match && ' · byte-identical match found'}
+              </p>
+              {response.results.length === 0 ? (
+                <div className="info-box" role="status">
+                  {response.total_indexed === 0
+                    ? 'Index is empty — initial scan may be running. Try again once indexing completes.'
+                    : 'No matches above the score threshold.'}
+                </div>
+              ) : (
+                <div className={selected ? 'split' : ''}>
+                  <ResultGrid
+                    results={response.results}
+                    selectedId={selected?.id ?? null}
+                    onSelect={setSelected}
+                  />
+                  {selected && <DetailPanel result={selected} onClose={() => setSelected(null)} />}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="placeholder">
+              <p>Upload a query image and hit Search.</p>
+              <p className="muted">
+                Matches include exact copies, resized variants and visually similar renderings.
+              </p>
+            </div>
+          )}
+        </section>
+      </main>
+    </div>
+  )
+}
