@@ -32,6 +32,24 @@ weights are baked into the image — no downloads at runtime.
 Keep the share in sync with a scheduled task (Windows example below); the app
 picks up changes on its next periodic rescan.
 
+### Platforms
+
+The image builds natively for `linux/amd64` (x64 servers, Intel Macs) and
+`linux/arm64` (Apple Silicon). A plain local build always targets the host
+architecture, so `docker compose up -d --build` works unchanged everywhere.
+All pinned wheels (torch/torchvision CPU builds, faiss-cpu) exist for both.
+
+To publish one multi-arch image from a single machine:
+
+```bash
+./docker-build-push.sh v0.1.0 rpo081   # explicit tag + username
+./docker-build-push.sh                 # defaults: git tag/SHA, gh CLI login
+```
+
+Both tags (`:v0.1.0` and `:latest`) are pushed as one multi-arch manifest.
+The foreign platform is cross-built under QEMU — first build of the torch and
+CLIP weight layers is slow, later builds hit the layer cache.
+
 ## Syncing from the network share
 
 ```powershell
