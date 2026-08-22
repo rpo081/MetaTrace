@@ -87,6 +87,7 @@ def test_security_headers_present(client):
     assert r.headers["X-Content-Type-Options"] == "nosniff"
     csp = r.headers["Content-Security-Policy"]
     assert "default-src 'self'" in csp
+    assert "img-src 'self' blob:" in csp
     assert "frame-ancestors 'none'" in csp
     assert r.headers["Referrer-Policy"] == "no-referrer"
 

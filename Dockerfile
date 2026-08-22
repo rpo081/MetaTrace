@@ -20,7 +20,11 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Bake CLIP weights into the image so the first start needs no network.
-RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32-quickgelu', pretrained='openai')"
+# HF_HOME moves the cache out of /root (mode 0700): the runtime user must be
+# able to read the baked weights, and hf_hub's token probe must not hit EACCES.
+ENV HF_HOME=/opt/hf
+RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32-quickgelu', pretrained='openai')" \
+ && chmod -R a+rX /opt/hf
 
 COPY backend/app ./app
 COPY --from=ui /fe/dist ./static

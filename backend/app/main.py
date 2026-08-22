@@ -109,10 +109,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         # style-src allows inline style attributes (score bars); scripts stay
-        # locked to same-origin via default-src.
+        # locked to same-origin via default-src. img-src needs blob: for the
+        # local query-image preview (URL.createObjectURL).
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+            "default-src 'self'; img-src 'self' blob:; "
+            "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
         )
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
