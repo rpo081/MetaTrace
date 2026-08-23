@@ -20,9 +20,6 @@ services:
       # Local SSD mirror of the network share (target of scripts/sync_images.py).
       # Mounted read-only; the app never writes here.
       - ${LOCAL_IMAGE_STORE:?Set LOCAL_IMAGE_STORE in .env}:/store:ro
-      # SQLite database, FAISS index, thumbnail cache.
-      - metatrace-data:/data
+      # SQLite database, FAISS index, thumbnail cache; accessible on the host.
+      - ./data:/data
     restart: unless-stopped
-
-volumes:
-  metatrace-data:

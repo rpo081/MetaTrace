@@ -37,6 +37,7 @@ class ScanReport:
     started_at: float = 0.0
     duration_sec: float = 0.0
     seen: int = 0
+    processed: int = 0
     added: int = 0
     updated: int = 0
     removed: int = 0
@@ -146,8 +147,15 @@ class Indexer:
         report = ScanReport(trigger=trigger, started_at=time.time())
         with self._scan_lock:
             self._set_state("scanning")
+            self.status["last_report"] = report.as_dict()
+
+            def publish(current: ScanReport) -> None:
+                self.status["last_report"] = current.as_dict()
+                if progress:
+                    progress(current.as_dict())
+
             try:
-                self._scan(report, force_rebuild, progress)
+                self._scan(report, force_rebuild, publish)
             except Exception:
                 self._set_state("error")
                 raise
@@ -249,6 +257,9 @@ class Indexer:
         ]
         removed_ids = sorted(known[r].id for r in known if r not in disk)
         report.unchanged = len(disk) - len(to_add) - len(to_update)
+        report.processed = report.unchanged
+        if progress:
+            progress(report)
 
         if removed_ids:
             if working is not None:
@@ -266,9 +277,11 @@ class Indexer:
         batch = max(1, s.batch_size)
         for i in range(0, len(pending), batch):
             chunk = pending[i : i + batch]
-            working = self._process_chunk(chunk, added_rel_paths, report, working)
+            working = self._process_chunk(
+                chunk, added_rel_paths, report, working, progress
+            )
             if progress:
-                progress(report.as_dict())
+                progress(report)
 
         if working is not None:
             tmp = s.index_file.with_suffix(".faiss.tmp")
@@ -291,6 +304,7 @@ class Indexer:
         added_set: set[str],
         report: ScanReport,
         index,
+        progress=None,
     ):
         """Embed one chunk into ``index`` (created on first use) and return it."""
         import faiss
@@ -311,6 +325,10 @@ class Indexer:
                 report.failed += 1
                 report.errors.append(f"{f.rel_path}: {exc}")
                 log.warning("decode failed: %s (%s)", f.rel_path, exc)
+            finally:
+                report.processed += 1
+                if progress:
+                    progress(report)
         if not images:
             return index
 

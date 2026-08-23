@@ -278,3 +278,19 @@ def test_scan_does_not_hold_lock_during_faiss_query(env):
         t.join(timeout=10)
         ix._walk_store = original_walk
     assert "report" in result
+
+
+def test_scan_publishes_live_report_for_inventory_and_batches(env):
+    ix, store, _settings = env
+    for n in range(9):
+        _png(store / f"image-{n}.png", (n, 0, 0))
+
+    updates = []
+    ix.incremental(trigger="progress", progress=updates.append)
+
+    assert updates[0]["seen"] == 9
+    assert {update["processed"] for update in updates} >= set(range(10))
+    assert updates[-1]["processed"] == 9
+    assert updates[-1]["added"] == 9
+    assert ix.status["state"] == "idle"
+    assert ix.status["last_report"]["added"] == 9

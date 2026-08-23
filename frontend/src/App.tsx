@@ -9,13 +9,22 @@ function fmtDuration(sec: number): string {
   return sec >= 10 ? `${Math.round(sec)}s` : `${Math.round(sec * 10) / 10}s`
 }
 
-function ScanReportLine({ report }: { report: ScanReport }) {
+function ScanReportLine({ report, scanning }: { report: ScanReport; scanning: boolean }) {
+  const indexed = report.added + report.updated
   return (
     <div className="scan-report" role="status">
-      <span className="scan-report-label">Last scan ({report.trigger})</span>
+      <span className="scan-report-label">
+        {scanning ? `Scanning (${report.trigger})` : `Last scan (${report.trigger})`}
+      </span>
       <span className="mono">
-        +{report.added} added · {report.updated} updated · −{report.removed} removed ·{' '}
-        {report.failed} failed · {fmtDuration(report.duration_sec)}
+        {scanning ? (
+          <>{report.processed} / {report.seen} scanned · {indexed} embedded · {report.failed} failed</>
+        ) : (
+          <>
+            +{report.added} added · {report.updated} updated · −{report.removed} removed ·{' '}
+            {report.failed} failed · {fmtDuration(report.duration_sec)}
+          </>
+        )}
       </span>
     </div>
   )
@@ -49,7 +58,7 @@ export default function App() {
   // stalled for up to one 10 s interval before the UI notices completion.
   useEffect(() => {
     if (stats?.state !== 'scanning') return
-    const t = setInterval(refreshStats, 1_000)
+    const t = setInterval(refreshStats, 250)
     return () => clearInterval(t)
   }, [stats?.state, refreshStats])
   // A finished scan retires the transient "Rescan started." notice.
@@ -174,7 +183,7 @@ export default function App() {
         </div>
       </header>
 
-      {stats?.last_report && <ScanReportLine report={stats.last_report} />}
+      {stats?.last_report && <ScanReportLine report={stats.last_report} scanning={scanning} />}
 
       <main className="layout">
         <section className="sidebar">

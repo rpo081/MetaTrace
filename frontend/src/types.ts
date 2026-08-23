@@ -21,6 +21,7 @@ export interface ScanReport {
   trigger: string
   duration_sec: number
   seen: number
+  processed: number
   added: number
   updated: number
   removed: number
