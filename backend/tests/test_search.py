@@ -56,6 +56,7 @@ def test_exact_match_pins_rank_one(service, tmp_path):
     assert out["results"][0]["exact"] is True
     assert out["results"][0]["score"] == 1.0
     assert out["results"][0]["rel_path"] == "a.png"
+    assert out["results"][0]["thumb_url"].endswith("?v=png1")
     # remaining results sorted by score descending
     scores = [r["score"] for r in out["results"][1:]]
     assert scores == sorted(scores, reverse=True)

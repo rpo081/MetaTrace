@@ -51,7 +51,9 @@ class SearchService:
                 **db.row_to_result(row),
                 "score": round(float(score), 4),
                 "exact": False,
-                "thumb_url": f"/api/thumb/{row['id']}",
+                # Cache-key version changes when the thumbnail encoding changes,
+                # so clients do not retain legacy JPEGs after a PNG migration.
+                "thumb_url": f"/api/thumb/{row['id']}?v=png1",
                 "file_url": f"/api/file/{row['id']}",
             }
             if row["sha256"] and row["sha256"] == sha and exact_hit is None:

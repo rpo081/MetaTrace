@@ -11,6 +11,12 @@ function fmtValue(v: unknown): string {
   return String(v)
 }
 
+function detailThumbnailUrl(thumbUrl: string): string {
+  const url = new URL(thumbUrl, window.location.origin)
+  url.searchParams.set('size', '1024')
+  return `${url.pathname}${url.search}`
+}
+
 export default function DetailPanel({ result, onClose }: Props) {
   const xmpEntries = Object.entries(result.xmp ?? {})
   return (
@@ -24,7 +30,7 @@ export default function DetailPanel({ result, onClose }: Props) {
 
       <img
         className="detail-img"
-        src={`${result.thumb_url}?size=1024`}
+        src={detailThumbnailUrl(result.thumb_url)}
         alt={result.rel_path}
       />
 

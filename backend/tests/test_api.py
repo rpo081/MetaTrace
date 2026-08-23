@@ -1,4 +1,6 @@
 """API tests with a temp store; no CLIP model needed for these endpoints."""
+import io
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -157,12 +159,23 @@ def test_thumb_size_clamped(client):
     # sizes outside 64..1024 are clamped; cache file name reflects the clamp
     r = client.get("/api/thumb/1", params={"size": 999999})
     assert r.status_code == 200
-    thumbs = sorted(p.name for p in client.app.state.settings.thumbs_dir.glob("*.jpg"))
-    assert thumbs == ["1_1024.jpg"]
+    thumbs = sorted(p.name for p in client.app.state.settings.thumbs_dir.glob("*.png"))
+    assert thumbs == ["1_1024.png"]
     r = client.get("/api/thumb/1", params={"size": 1})
     assert r.status_code == 200
-    thumbs = sorted(p.name for p in client.app.state.settings.thumbs_dir.glob("*.jpg"))
-    assert thumbs == ["1_1024.jpg", "1_64.jpg"]
+    thumbs = sorted(p.name for p in client.app.state.settings.thumbs_dir.glob("*.png"))
+    assert thumbs == ["1_1024.png", "1_64.png"]
+
+
+def test_thumb_preserves_png_alpha(client):
+    source = client.app.state.settings.store_path / "x.png"
+    Image.new("RGBA", (8, 8), (255, 0, 0, 0)).save(source)
+
+    response = client.get("/api/thumb/1")
+    assert response.status_code == 200
+    with Image.open(io.BytesIO(response.content)) as thumbnail:
+        assert thumbnail.mode == "RGBA"
+        assert thumbnail.getpixel((0, 0))[3] == 0
 
 
 def test_file_and_thumb_containment_against_symlink_escape(client, tmp_path):
@@ -292,8 +305,8 @@ def test_startup_cleans_orphaned_thumb_temps(tmp_path, monkeypatch):
     """I3: crashed thumbnail writes leave temp files; startup sweeps them."""
     app, settings = _minimal_app(tmp_path, _monkeypatch=monkeypatch)
     settings.ensure_dirs()
-    keep = settings.thumbs_dir / "1_512.jpg"
-    keep.write_bytes(b"jpeg-bytes")           # real cache entry: untouched
+    keep = settings.thumbs_dir / "1_512.png"
+    keep.write_bytes(b"png-bytes")            # real cache entry: untouched
     orphans = [
         settings.thumbs_dir / "tmpAbCdEf.tmp",  # mkstemp(suffix=".tmp") shape
         settings.thumbs_dir / ".tmphidden",     # literal .tmp* shape

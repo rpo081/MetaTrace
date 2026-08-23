@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from PIL import UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .. import db, embeddings, metadata
 
@@ -147,20 +147,29 @@ def thumb(request: Request, image_id: int, size: int | None = Query(default=None
     row = _get_row_or_404(request, image_id)
     side = min(max(size or s.thumb_size, 64), 1024)
 
-    cache = s.thumbs_dir / f"{image_id}_{side}.jpg"
+    cache = s.thumbs_dir / f"{image_id}_{side}.png"
     if not cache.exists():
         src = _store_file(s, row["rel_path"])
         if not src.exists():
             raise HTTPException(404, "source file missing from store")
         try:
-            img = embeddings.decode_image(src)
+            try:
+                with Image.open(src) as original:
+                    img = ImageOps.exif_transpose(original)
+                    if "A" in img.getbands():
+                        img = img.convert("RGBA")
+                    else:
+                        img = img.convert("RGB")
+            except UnidentifiedImageError:
+                # PSDs Pillow cannot open still use the existing psd-tools fallback.
+                img = embeddings.decode_image(src)
             img.thumbnail((side, side))
             # Write to a unique temp name next to the cache, then atomically
-            # replace so concurrent requests never serve a partial JPEG.
+            # replace so concurrent requests never serve a partial PNG.
             fd, tmp_name = tempfile.mkstemp(dir=s.thumbs_dir, suffix=".tmp")
             try:
                 with os.fdopen(fd, "wb") as fh:
-                    img.save(fh, "JPEG", quality=85)
+                    img.save(fh, "PNG", optimize=True)
                 os.replace(tmp_name, cache)
             except BaseException:
                 _unlink_quiet(tmp_name)
@@ -170,7 +179,7 @@ def thumb(request: Request, image_id: int, size: int | None = Query(default=None
         except Exception:  # noqa: BLE001
             log.exception("thumbnail generation failed for image %s", image_id)
             raise HTTPException(500, "thumbnail generation failed") from None
-    return FileResponse(cache, media_type="image/jpeg",
+    return FileResponse(cache, media_type="image/png",
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
