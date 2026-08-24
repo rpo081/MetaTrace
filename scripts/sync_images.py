@@ -76,10 +76,11 @@ def image_masks(mode: str, path_matches: bool) -> tuple[str, ...]:
 
 def normalize_skip_dirs(skip_dirs: list[str]) -> frozenset[str]:
     """Return case-insensitive, source-relative paths for walk pruning."""
+    posix_names = [path.replace("\\", "/") for path in skip_dirs]
     normalized = frozenset(
-        Path(path).as_posix().strip("/").casefold()
-        for path in skip_dirs
-        if Path(path).as_posix().strip("/")
+        Path(posix_name).as_posix().strip("/").casefold()
+        for posix_name in posix_names
+        if Path(posix_name).as_posix().strip("/")
     )
     if "." in normalized:
         raise ValueError("--skip-dir must name a subfolder below SRC")
