@@ -21,6 +21,7 @@ def test_folder_mode_matching_is_case_insensitive_and_component_based():
 def test_final_mode_runs_robocopy_only_for_final_folders(tmp_path, monkeypatch):
     src = tmp_path / "src"
     dst = tmp_path / "dst"
+    _touch(src / "project" / "final" / "render2.png")
     _touch(src / "project" / "_final" / "render.png")
     _touch(src / "project" / "manual" / "guide.jpg")
     calls = []
@@ -32,12 +33,14 @@ def test_final_mode_runs_robocopy_only_for_final_folders(tmp_path, monkeypatch):
 
     stats = mod.Stats()
     mod.copy_matching_folders(src, dst, "final", 4, False, stats)
-    assert len(calls) == 1
-    assert "_final" in calls[0][1]
-    assert "manual" not in calls[0][1]
-    assert "/MT:4" in calls[0]
-    assert f"/MAX:{mod.MAX_COPY_SIZE_BYTES - 1}" in calls[0]
-    assert stats.folders == 1 and stats.failed == 0
+    assert len(calls) == 2
+    source_dirs = {command[1] for command in calls}
+    assert any("_final" in directory for directory in source_dirs)
+    assert any("final" in directory and "_final" not in directory for directory in source_dirs)
+    assert all("manual" not in directory for directory in source_dirs)
+    assert all("/MT:4" in command for command in calls)
+    assert all(f"/MAX:{mod.MAX_COPY_SIZE_BYTES - 1}" in command for command in calls)
+    assert stats.folders == 2 and stats.failed == 0
 
 
 def test_all_mode_runs_robocopy_for_every_image_folder(tmp_path, monkeypatch):

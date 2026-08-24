@@ -36,6 +36,12 @@ SKIP_DIRS = frozenset({
     "__MACOSX",
 })
 
+MODE_FOLDER_KEYWORDS = {
+    "all": (),
+    "final": ("final", "_final"),
+    "manual": ("manual",),
+}
+
 
 def longpath(path: str | os.PathLike[str]) -> str:
     """Return an absolute Windows extended path for Python file operations."""
@@ -65,8 +71,9 @@ class Stats:
 
 
 def matches_mode(relative_dir: Path, mode: str) -> bool:
-    """Return whether a folder name in the path contains the selected mode."""
-    return any(mode in part.casefold() for part in relative_dir.parts)
+    """Return whether a folder name contains any keyword for the selected mode."""
+    keywords = MODE_FOLDER_KEYWORDS.get(mode, (mode,))
+    return any(any(keyword in part.casefold() for keyword in keywords) for part in relative_dir.parts)
 
 
 def image_masks(mode: str, path_matches: bool) -> tuple[str, ...]:

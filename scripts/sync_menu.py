@@ -50,7 +50,7 @@ DEFAULT_CONFIG = Path.home() / ".metatrace_sync_menu.json"
 MODES = ("all", "final", "manual")
 MODE_INFO = {
     "all": "alle erlaubten Bilder unterhalb der Quelle",
-    "final": "alle Bilder unter Ordnern mit 'final' im Namen",
+    "final": "alle Bilder unter Ordnern mit 'final' oder '_final' im Namen",
     "manual": "in 'manual'-Ordnern alle Bilder, sonst nur *manual*-Bilddateien",
 }
 

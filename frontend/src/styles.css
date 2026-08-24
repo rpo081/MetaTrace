@@ -421,6 +421,18 @@ input[type='range'] {
 .kv .k {
   color: var(--muted);
 }
+.path-copy {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: copy;
+}
+.path-copy:hover {
+  color: var(--accent);
+}
 .xmp-table {
   width: 100%;
   border-collapse: collapse;
