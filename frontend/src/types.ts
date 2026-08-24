@@ -31,6 +31,31 @@ export interface ScanReport {
   errors?: string[]
 }
 
+export interface RescanDeltaSummary {
+  created_count: number
+  deleted_count: number
+  modified_count: number
+  total_changes: number
+}
+
+export interface RescanDelta {
+  timestamp: string
+  summary: RescanDeltaSummary
+  changes: {
+    created: string[]
+    deleted: string[]
+    modified: string[]
+  }
+}
+
+export interface RescanDeltaResponse {
+  status: 'ok' | 'no_delta'
+  timestamp?: string
+  summary?: RescanDeltaSummary
+  changes?: RescanDelta['changes']
+  message?: string
+}
+
 export interface Stats {
   indexed: number
   state: string

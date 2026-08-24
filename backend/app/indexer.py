@@ -142,8 +142,17 @@ class Indexer:
         trigger: str = "manual",
         force_rebuild: bool = False,
         progress=None,
+        delta_info: dict | None = None,
     ) -> ScanReport:
-        """Scan the store, embed new/changed files, drop deleted ones."""
+        """Scan the store, embed new/changed files, drop deleted ones.
+        
+        Args:
+            trigger: Scan reason (e.g., 'manual-api', 'startup')
+            force_rebuild: Force complete index rebuild
+            progress: Progress callback
+            delta_info: Optional delta dict with changes (created/deleted/modified lists)
+                       If provided and not force_rebuild, only process these changes.
+        """
         report = ScanReport(trigger=trigger, started_at=time.time())
         with self._scan_lock:
             self._set_state("scanning")
@@ -155,7 +164,11 @@ class Indexer:
                     progress(current.as_dict())
 
             try:
-                self._scan(report, force_rebuild, publish)
+                # Try delta-optimized path if available and not forcing rebuild
+                if delta_info and not force_rebuild:
+                    self._process_delta(report, delta_info, publish)
+                else:
+                    self._scan(report, force_rebuild, publish)
             except Exception:
                 self._set_state("error")
                 raise
@@ -296,6 +309,133 @@ class Indexer:
             "scan done (%s): seen=%d added=%d updated=%d removed=%d failed=%d in %.1fs",
             report.trigger, report.seen, report.added, report.updated,
             report.removed, report.failed, report.duration_sec or 0.0,
+        )
+
+    def _process_delta(self, report: ScanReport, delta_info: dict, progress) -> None:
+        """Delta-optimized scan: only process changed files (created/deleted/modified).
+        
+        This is much faster than _scan() because:
+        - No _walk_store() call (no full filesystem traversal)
+        - Only processes the delta file lists
+        - Minimal DB lookups
+        """
+        import faiss
+
+        s = self.settings
+        db.init_db(s.db_path)
+        known = db.list_entries(s.db_path)
+
+        changes = delta_info.get("changes", {})
+        deleted_paths = set(changes.get("deleted", []))
+        created_paths = set(changes.get("created", []))
+        modified_paths = set(changes.get("modified", []))
+
+        # Report seen = total changes (not full store size)
+        report.seen = len(deleted_paths) + len(created_paths) + len(modified_paths)
+
+        # Snapshot the current index for mutation
+        with self._lock:
+            working = (
+                faiss.clone_index(self.index) if self.index is not None else None
+            )
+
+        # === STEP 1: Handle deleted files ===
+        removed_ids = []
+        for rel_path in deleted_paths:
+            log.info("checking deleted rel_path: %r (in known: %s)", rel_path, rel_path in known)
+            if rel_path in known:
+                removed_ids.append(known[rel_path].id)
+                log.debug("removing from index: %s (id=%d)", rel_path, known[rel_path].id)
+            else:
+                log.warning("deleted path not found in DB: %r", rel_path)
+                # Debug: show what we have in known
+                if known:
+                    log.warning("known paths sample (first 3): %s", 
+                               list(known.keys())[:3])
+        
+        log.info("delta: deleted_paths=%d, removed_ids=%d", len(deleted_paths), len(removed_ids))
+        
+        if removed_ids:
+            if working is not None:
+                working.remove_ids(np.array(removed_ids, dtype="int64"))
+            db.remove_ids(s.db_path, removed_ids)
+            report.removed = len(removed_ids)
+            report.processed += len(removed_ids)
+            if progress:
+                progress(report)
+
+        # === STEP 2: Handle created + modified files ===
+        # Convert rel_paths to DiskFile objects (need abs_path for image decoding)
+        to_process = []
+        added_set = set()
+        
+        for rel_path in created_paths:
+            abs_path = s.store_path / rel_path
+            if abs_path.exists():
+                stat = abs_path.stat()
+                to_process.append(DiskFile(
+                    rel_path=rel_path,
+                    abs_path=abs_path,
+                    size=stat.st_size,
+                    mtime=stat.st_mtime
+                ))
+                added_set.add(rel_path)
+        
+        # Remove stale vectors for modified files before re-adding
+        update_ids = []
+        for rel_path in modified_paths:
+            if rel_path in known:
+                update_ids.append(known[rel_path].id)
+                abs_path = s.store_path / rel_path
+                if abs_path.exists():
+                    stat = abs_path.stat()
+                    to_process.append(DiskFile(
+                        rel_path=rel_path,
+                        abs_path=abs_path,
+                        size=stat.st_size,
+                        mtime=stat.st_mtime
+                    ))
+        
+        if update_ids and working is not None:
+            working.remove_ids(np.array(update_ids, dtype="int64"))
+            report.processed += len(update_ids)
+
+        # Process the to_process files in batches
+        batch = max(1, s.batch_size)
+        for i in range(0, len(to_process), batch):
+            chunk = to_process[i : i + batch]
+            working = self._process_chunk(
+                chunk, added_set, report, working, progress
+            )
+            if progress:
+                progress(report)
+
+        # === STEP 3: Publish updated index ===
+        if working is not None:
+            tmp = s.index_file.with_suffix(".faiss.tmp")
+            faiss.write_index(working, str(tmp))
+            tmp.replace(s.index_file)
+            log.info("wrote new index: ntotal=%d", working.ntotal)
+        
+        with self._lock:
+            self.index = working
+            log.info("published index to self.index, new ntotal=%d", 
+                    (working.ntotal if working else 0))
+        
+        db.kv_set(s.db_path, "last_scan", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        
+        # Clean up the delta file after successful processing so it's not re-processed
+        delta_file = s.data_path / "rescan_delta_latest.json"
+        try:
+            delta_file.unlink(missing_ok=True)
+            log.info("cleaned up delta file after processing")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not remove delta file: %s", exc)
+        
+        log.info(
+            "delta scan done (%s): deleted=%d created=%d modified=%d added=%d updated=%d failed=%d in %.1fs",
+            report.trigger, len(deleted_paths), len(created_paths), len(modified_paths),
+            report.added, report.updated, report.failed, report.duration_sec or 0.0,
         )
 
     def _process_chunk(

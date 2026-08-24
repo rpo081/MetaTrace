@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, getStats, searchImage, triggerRescan } from './api'
+import { ApiError, getStats, searchImage, triggerRescan, getRescanDelta } from './api'
 import Dropzone from './components/Dropzone'
 import DetailPanel from './components/DetailPanel'
 import ResultGrid from './components/ResultGrid'
-import type { ScanReport, SearchResponse, SearchResult, Stats } from './types'
+import type { ScanReport, SearchResponse, SearchResult, Stats, RescanDeltaResponse } from './types'
 
 function fmtDuration(sec: number): string {
   return sec >= 10 ? `${Math.round(sec)}s` : `${Math.round(sec * 10) / 10}s`
@@ -30,8 +30,58 @@ function ScanReportLine({ report, scanning }: { report: ScanReport; scanning: bo
   )
 }
 
+function DeltaInfo({
+  delta,
+  onRescanWithDelta,
+  onRescanFull,
+  loading,
+}: {
+  delta: RescanDeltaResponse | null
+  onRescanWithDelta: () => void
+  onRescanFull: () => void
+  loading: boolean
+}) {
+  if (!delta || delta.status === 'no_delta') {
+    return null
+  }
+  const { summary } = delta
+  if (!summary) return null
+
+  const totalChanges = summary.total_changes
+  return (
+    <div className="delta-info" role="status">
+      <div className="delta-info-title">Changes since last scan:</div>
+      <div className="delta-info-details">
+        {summary.created_count > 0 && (
+          <span className="delta-created">+{summary.created_count} new</span>
+        )}
+        {summary.modified_count > 0 && (
+          <span className="delta-modified">~{summary.modified_count} modified</span>
+        )}
+        {summary.deleted_count > 0 && (
+          <span className="delta-deleted">−{summary.deleted_count} deleted</span>
+        )}
+      </div>
+      <div className="delta-info-actions">
+        <button
+          className="btn btn-sm"
+          onClick={onRescanWithDelta}
+          disabled={loading || totalChanges === 0}
+          title={totalChanges === 0 ? 'No changes to scan' : 'Scan only changed files'}
+        >
+          Rescan ({totalChanges})
+        </button>
+        <button className="btn btn-sm" onClick={onRescanFull} disabled={loading} title="Full rescan">
+          Full
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [stats, setStats] = useState<Stats | null>(null)
+  const [delta, setDelta] = useState<RescanDeltaResponse | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [k, setK] = useState(5)
@@ -47,6 +97,7 @@ export default function App() {
 
   const refreshStats = useCallback(() => {
     getStats().then(setStats).catch(() => {})
+    getRescanDelta().then(setDelta).catch(() => {})
   }, [])
 
   useEffect(refreshStats, [refreshStats])
@@ -128,9 +179,9 @@ export default function App() {
   }, [file, k, minScore, refreshStats])
 
   const rescan = useCallback(
-    async (rebuild: boolean) => {
+    async (rebuild: boolean, useDelta: boolean = true) => {
       try {
-        await triggerRescan(rebuild)
+        await triggerRescan(rebuild, useDelta)
         setError(null)
         setNotice('Rescan started.')
         refreshStats() // flip to "scanning" immediately, don't wait for the 10 s tick
@@ -168,14 +219,24 @@ export default function App() {
                   exiftool missing · no XMP
                 </span>
               )}
-              <button
-                className="btn"
-                onClick={() => rescan(false)}
-                disabled={scanning}
-                title={scanning ? 'A scan is already running' : 'Incremental rescan'}
-              >
-                Rescan
-              </button>
+              {!scanning && delta?.status === 'ok' && delta.summary && (
+                <DeltaInfo
+                  delta={delta}
+                  onRescanWithDelta={() => rescan(false, true)}
+                  onRescanFull={() => rescan(false, false)}
+                  loading={scanning}
+                />
+              )}
+              {!scanning && (delta?.status === 'no_delta' || !delta) && (
+                <button
+                  className="btn"
+                  onClick={() => rescan(false, true)}
+                  disabled={scanning}
+                  title={scanning ? 'A scan is already running' : 'Scan (delta-optimized if available)'}
+                >
+                  Rescan
+                </button>
+              )}
             </>
           ) : (
             <span className="muted">connecting…</span>

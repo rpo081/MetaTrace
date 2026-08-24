@@ -1,4 +1,4 @@
-import type { SearchResponse, Stats } from './types'
+import type { SearchResponse, Stats, RescanDeltaResponse } from './types'
 
 /** Error carrying the HTTP status so callers can special-case codes (e.g. 409). */
 export class ApiError extends Error {
@@ -56,10 +56,19 @@ function getAdminToken(): string | null {
   }
 }
 
-export async function triggerRescan(rebuild = false): Promise<void> {
+export async function triggerRescan(rebuild = false, useDelta = true): Promise<void> {
   const headers: Record<string, string> = {}
   const token = getAdminToken()
   if (token) headers['X-Admin-Token'] = token
-  const res = await fetch(`/api/rescan?rebuild=${rebuild}`, { method: 'POST', headers })
+  const res = await fetch(
+    `/api/rescan?rebuild=${rebuild}&use_delta=${useDelta}`,
+    { method: 'POST', headers },
+  )
   if (!res.ok) await parseError(res)
+}
+
+export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaResponse> {
+  const res = await fetch('/api/rescan-delta', { signal })
+  if (!res.ok) await parseError(res)
+  return res.json()
 }

@@ -462,6 +462,48 @@ input[type='range'] {
   padding: 24px;
 }
 
+/* ---------- delta info ---------- */
+.delta-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.delta-info-title {
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-size: 11px;
+}
+.delta-info-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.delta-created {
+  color: var(--green);
+}
+.delta-modified {
+  color: var(--accent);
+}
+.delta-deleted {
+  color: var(--red-text);
+}
+.delta-info-actions {
+  display: flex;
+  gap: 6px;
+}
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;

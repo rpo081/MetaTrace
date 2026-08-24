@@ -1,6 +1,7 @@
 """API routes."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
@@ -192,10 +193,76 @@ def original_file(request: Request, image_id: int) -> FileResponse:
     return FileResponse(src)
 
 
+@router.get("/rescan-delta")
+def get_rescan_delta(request: Request) -> dict:
+    """Gibt das neueste Delta JSON für optimierte Rescans zurück.
+    
+    Returns:
+        - status='ok': Delta verfügbar mit timestamp, summary, und changes
+        - status='no_delta': Kein Delta verfügbar (Vollständiger Rescan nötig)
+    """
+    s = request.app.state.settings
+    delta_file = s.data_path / "rescan_delta_latest.json"
+    
+    if not delta_file.exists():
+        return {
+            "status": "no_delta",
+            "message": "Kein Delta verfügbar",
+        }
+    
+    try:
+        with open(delta_file, "r") as f:
+            delta_data = json.load(f)
+        
+        return {
+            "status": "ok",
+            "timestamp": delta_data["timestamp"],
+            "summary": delta_data["summary"],
+            "changes": delta_data["changes"]
+        }
+    except Exception as e:  # noqa: BLE001
+        log.exception("failed to read rescan delta")
+        raise HTTPException(500, "failed to read rescan delta") from None
+
+
 @router.post("/rescan", status_code=202)
-def rescan(request: Request, rebuild: bool = Query(default=False)) -> dict:
+def rescan(request: Request, rebuild: bool = Query(default=False), use_delta: bool = Query(default=True)) -> dict:
+    """Startet einen Rescan, optional mit Delta-Optimierung.
+    
+    Parameters:
+        - rebuild: Vollständiger Rebuild des Index (ignoriert use_delta)
+        - use_delta: Wenn True und Delta verfügbar, verarbeite nur Änderungen
+    """
     _require_admin_token(request)
-    ok = request.app.state.scheduler.trigger_now(rebuild=rebuild)
+    
+    # Wenn rebuild=True, ignoriere Delta
+    if rebuild:
+        ok = request.app.state.scheduler.trigger_now(rebuild=True)
+        if not ok:
+            raise HTTPException(409, "a scan is already running")
+        return {"started": True, "rebuild": True, "delta_enabled": False}
+    
+    # Optional: Delta-Informationen an Scheduler übergeben
+    delta_info = None
+    if use_delta:
+        s = request.app.state.settings
+        delta_file = s.data_path / "rescan_delta_latest.json"
+        if delta_file.exists():
+            try:
+                with open(delta_file, "r") as f:
+                    delta_info = json.load(f)
+            except Exception:  # noqa: BLE001
+                log.warning("could not load delta, proceeding without delta")
+    
+    ok = request.app.state.scheduler.trigger_now(rebuild=False, delta_info=delta_info)
     if not ok:
         raise HTTPException(409, "a scan is already running")
-    return {"started": True, "rebuild": rebuild}
+    
+    has_delta = delta_info is not None
+    return {
+        "started": True,
+        "rebuild": False,
+        "delta_enabled": use_delta,
+        "has_delta": has_delta,
+        "delta_summary": delta_info["summary"] if has_delta else None
+    }
