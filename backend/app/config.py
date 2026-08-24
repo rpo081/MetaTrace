@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     thumb_size: int = 512
     max_upload_mb: int = 64
 
-    allowed_extensions: str = ".psd,.jpg,.jpeg,.png"
+    allowed_extensions: str = ".psd,.jpg,.jpeg,.png,.tif,.tiff"
 
     # Shared secret for mutating endpoints (POST /api/rescan). When unset the
     # API runs in trusted-LAN mode: mutations are allowed but a warning is

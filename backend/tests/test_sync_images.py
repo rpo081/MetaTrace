@@ -60,6 +60,26 @@ def test_manual_mode_runs_robocopy_for_manual_path_folders(tmp_path, monkeypatch
     assert stats.folders == 1 and stats.failed == 0
 
 
+def test_manual_mode_includes_images_below_manual_named_source_root(tmp_path, monkeypatch):
+    src = tmp_path / "MR_Manual"
+    dst = tmp_path / "dst"
+    _touch(src / "hero.png")
+    _touch(src / "nested" / "detail.tif")
+    calls = []
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, check: calls.append(command) or SimpleNamespace(returncode=0),
+    )
+
+    stats = mod.Stats()
+    mod.copy_matching_folders(src, dst, "manual", 8, False, stats)
+    assert len(calls) == 2
+    assert all("*.png" in command and "*.tif" in command for command in calls)
+    assert all("/LEV:1" in command for command in calls)
+    assert stats.folders == 2 and stats.failed == 0
+
+
 def test_manual_mode_copies_only_manual_named_images_outside_manual_paths(tmp_path, monkeypatch):
     src = tmp_path / "src"
     dst = tmp_path / "dst"
@@ -77,6 +97,24 @@ def test_manual_mode_copies_only_manual_named_images_outside_manual_paths(tmp_pa
     assert len(calls) == 1
     assert "*manual*.png" in calls[0]
     assert "*.png" not in calls[0]
+    assert stats.folders == 1 and stats.failed == 0
+
+
+def test_manual_mode_accepts_manual_named_tif_files(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _touch(src / "project" / "output" / "hero_manual.tif")
+    calls = []
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, check: calls.append(command) or SimpleNamespace(returncode=0),
+    )
+
+    stats = mod.Stats()
+    mod.copy_matching_folders(src, dst, "manual", 8, False, stats)
+    assert len(calls) == 1
+    assert "*manual*.tif" in calls[0]
     assert stats.folders == 1 and stats.failed == 0
 
 

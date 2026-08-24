@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Copy selected image folders from a Windows share with robocopy.
 
-Only PNG, JPG, and JPEG files smaller than 20 MiB are copied. Python traverses
-the source tree; robocopy performs each folder transfer using native workers.
+Only PNG, JPG, JPEG, TIF, and TIFF files smaller than 20 MiB are copied. Python
+traverses the source tree; robocopy performs each folder transfer using native
+workers.
 
 Usage:
     python sync_images.py SRC DST --mode {final,manual} [--threads N] [--skip-dir PATH] [--dry-run]
@@ -24,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 IS_WINDOWS = os.name == "nt"
-ALLOWED_EXTS = frozenset({".png", ".jpg", ".jpeg"})
+ALLOWED_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff"})
 MAX_COPY_SIZE_BYTES = 20 * 1024 * 1024
 SKIP_DIRS = frozenset({
     "$RECYCLE.BIN",
@@ -70,8 +71,11 @@ def matches_mode(relative_dir: Path, mode: str) -> bool:
 def image_masks(mode: str, path_matches: bool) -> tuple[str, ...]:
     """Return robocopy image masks for the selected folder."""
     if mode == "manual" and not path_matches:
-        return ("*manual*.png", "*manual*.jpg", "*manual*.jpeg")
-    return ("*.png", "*.jpg", "*.jpeg")
+        return (
+            "*manual*.png", "*manual*.jpg", "*manual*.jpeg",
+            "*manual*.tif", "*manual*.tiff",
+        )
+    return ("*.png", "*.jpg", "*.jpeg", "*.tif", "*.tiff")
 
 
 def normalize_skip_dirs(skip_dirs: list[str]) -> frozenset[str]:
@@ -99,6 +103,7 @@ def copy_matching_folders(
     """Run robocopy for every matching source directory containing images."""
     source_base = Path(longpath(src))
     destination_base = Path(longpath(dst))
+    source_path_matches = matches_mode(src, mode)
     previous_folder: str | None = None
 
     for dirpath, dirnames, filenames in os.walk(source_base):
@@ -111,7 +116,7 @@ def copy_matching_folders(
         )
         source_dir = Path(dirpath)
         relative_dir = current_relative
-        path_matches = matches_mode(relative_dir, mode)
+        path_matches = source_path_matches or matches_mode(relative_dir, mode)
         filename_matches = (
             mode == "manual"
             and any(
@@ -135,6 +140,7 @@ def copy_matching_folders(
             robocopy_path(source_dir),
             robocopy_path(destination_base / relative_dir),
             *image_masks(mode, path_matches),
+            "/LEV:1",
             f"/MAX:{MAX_COPY_SIZE_BYTES - 1}",
             f"/MT:{max(1, min(128, threads))}",
             "/R:1",
