@@ -11,6 +11,8 @@ services:
       NETWORK_ROOT: ${NETWORK_ROOT:-}
       RUN_INITIAL_SCAN_ON_START: ${RUN_INITIAL_SCAN_ON_START:-true}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
+      # Force CPU mode for CLIP embeddings.
+      DEVICE: ${DEVICE:-cpu}
       # Mutating-endpoint guard (X-Admin-Token header); empty = trusted-LAN mode.
       METATRACE_ADMIN_TOKEN: ${METATRACE_ADMIN_TOKEN:-}
       # Extra CORS origins (comma-separated); empty = no CORS middleware.
@@ -21,11 +23,4 @@ services:
       - ${LOCAL_IMAGE_STORE:?Set LOCAL_IMAGE_STORE in .env}:/store:ro
       # SQLite database, FAISS index, thumbnail cache; accessible on the host.
       - ./data:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     restart: unless-stopped

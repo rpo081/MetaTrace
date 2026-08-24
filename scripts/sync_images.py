@@ -6,11 +6,12 @@ traverses the source tree; robocopy performs each folder transfer using native
 workers.
 
 Usage:
-    python sync_images.py SRC DST --mode {final,manual} [--threads N] [--skip-dir PATH] [--dry-run]
+    python sync_images.py SRC DST --mode {all,final,manual} [--threads N] [--skip-dir PATH] [--dry-run]
 
 Examples:
     python sync_images.py "\\\\server\\share" "G:\\images" --mode final --threads 8
     python sync_images.py "\\\\server\\share" "G:\\images" --mode manual --threads 8
+    python sync_images.py "\\\\server\\share" "G:\\images" --mode all --threads 8
     python sync_images.py "\\\\server\\share" "G:\\images" --mode manual --skip-dir "archive/old"
 """
 
@@ -116,7 +117,7 @@ def copy_matching_folders(
         )
         source_dir = Path(dirpath)
         relative_dir = current_relative
-        path_matches = source_path_matches or matches_mode(relative_dir, mode)
+        path_matches = mode == "all" or source_path_matches or matches_mode(relative_dir, mode)
         filename_matches = (
             mode == "manual"
             and any(
@@ -125,7 +126,7 @@ def copy_matching_folders(
                 for name in filenames
             )
         )
-        if not path_matches and not filename_matches:
+        if mode != "all" and not path_matches and not filename_matches:
             continue
         if not any(Path(name).suffix.casefold() in ALLOWED_EXTS for name in filenames):
             continue
@@ -181,9 +182,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("dst", help="destination folder")
     parser.add_argument(
         "--mode",
-        choices=("final", "manual"),
+        choices=("all", "final", "manual"),
         required=True,
-        help="copy matching images below folders whose names contain this value",
+        help="copy all images or match images below folders containing this value",
     )
     parser.add_argument(
         "--threads", type=int, default=8, help="robocopy worker threads (default: 8)"

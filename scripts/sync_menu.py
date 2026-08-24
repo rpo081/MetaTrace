@@ -21,7 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import select
+import shutil
 import sys
 import time
 from contextlib import contextmanager
@@ -45,8 +47,9 @@ except ImportError:
     termios = None
 
 DEFAULT_CONFIG = Path.home() / ".metatrace_sync_menu.json"
-MODES = ("final", "manual")
+MODES = ("all", "final", "manual")
 MODE_INFO = {
+    "all": "alle erlaubten Bilder unterhalb der Quelle",
     "final": "alle Bilder unter Ordnern mit 'final' im Namen",
     "manual": "in 'manual'-Ordnern alle Bilder, sonst nur *manual*-Bilddateien",
 }
@@ -56,6 +59,8 @@ DIM = "\x1b[2m"
 CYAN = "\x1b[36m"
 RED = "\x1b[31m"
 RESET = "\x1b[0m"
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+FRAME_BLOCK = "░"
 
 
 @dataclass
@@ -117,6 +122,29 @@ def shorten(text: str, width: int = 58) -> str:
     return text[:left] + "…" + text[len(text) - (keep - left):]
 
 
+def clear_screen() -> None:
+    """Clear prior menu output before rendering the next menu state."""
+    sys.stdout.write("\x1b[H\x1b[2J\x1b[H")
+    sys.stdout.flush()
+
+
+@contextmanager
+def alternate_screen():
+    """Keep interactive redraws out of the terminal's normal scrollback."""
+    sys.stdout.write("\x1b[?1049h")
+    clear_screen()
+    try:
+        yield
+    finally:
+        sys.stdout.write("\x1b[?1049l")
+        sys.stdout.flush()
+
+
+def is_accessible_directory(path: str) -> bool:
+    """Check local, drive-letter, and UNC folders with Windows long-path support."""
+    return os.path.isdir(si.longpath(path))
+
+
 def _read_key() -> str:
     """Read one keypress; return 'up', 'down', 'enter', 'esc' or the character."""
     if msvcrt is not None:
@@ -163,27 +191,31 @@ def raw_terminal():
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def choose(title: str, options: list[str]) -> int | None:
+def choose(
+    title: str,
+    options: list[str],
+    preamble: list[str] | None = None,
+    framed: bool = False,
+) -> int | None:
     """Render an arrow-key selectable list; return index, or None on Esc."""
     selected = 0
     hint = f"{DIM}↑/↓ auswählen · Enter bestätigen · Esc zurück{RESET}"
-    drawn = False
     with raw_terminal():
         sys.stdout.write("\x1b[?25l")
         try:
             while True:
-                rows = [f"{BOLD}{title}{RESET}", hint]
+                rows = [*(preamble or []), f"{BOLD}{title}{RESET}", hint]
                 for index, option in enumerate(options):
                     if index == selected:
                         rows.append(f"{CYAN}{BOLD}>{RESET} {BOLD}{option}{RESET}")
                     else:
                         rows.append(f"  {option}")
-                if drawn:
-                    sys.stdout.write(f"\x1b[{len(rows)}A")
+                if framed:
+                    rows = framed_rows(rows)
+                clear_screen()
                 for row in rows:
-                    sys.stdout.write("\x1b[2K" + row + "\n")
+                    sys.stdout.write("\r\x1b[2K" + row + "\n")
                 sys.stdout.flush()
-                drawn = True
 
                 key = _read_key()
                 if key == "up":
@@ -231,7 +263,6 @@ def browse_folder(title: str, start: str) -> str | object | None:
     current = Path(start) if start and Path(start).exists() else Path.home()
     entries = list_subdirectories(current)
     sel = 0
-    drawn = False
     with raw_terminal():
         sys.stdout.write("\x1b[?25l")
         try:
@@ -249,9 +280,15 @@ def browse_folder(title: str, start: str) -> str | object | None:
                 rows = [
                     f"{BOLD}{title}{RESET}",
                     f"{DIM}Pfad: {RESET}{shorten(str(current), 64)}",
-                    "[ Diesen Ordner wählen ]",
-                    f"{DIM}[ Pfad manuell eingeben … ]{RESET}",
                 ]
+                if sel == 0:
+                    rows.append(f"{CYAN}{BOLD}>{RESET} {BOLD}[ Diesen Ordner wählen ]{RESET}")
+                else:
+                    rows.append("  [ Diesen Ordner wählen ]")
+                if sel == 1:
+                    rows.append(f"{CYAN}{BOLD}>{RESET} {BOLD}[ Pfad manuell eingeben … ]{RESET}")
+                else:
+                    rows.append(f"  {DIM}[ Pfad manuell eingeben … ]{RESET}")
                 for offset, item in enumerate(view):
                     index = 2 + lo + offset
                     if not item:
@@ -261,12 +298,11 @@ def browse_folder(title: str, start: str) -> str | object | None:
                     else:
                         rows.append(f"  {item}")
                 rows.append(truncated)
-                if drawn:
-                    sys.stdout.write(f"\x1b[{len(rows)}A")
+                rows = framed_rows(rows)
+                clear_screen()
                 for row in rows:
-                    sys.stdout.write("\x1b[2K" + row + "\n")
+                    sys.stdout.write("\r\x1b[2K" + row + "\n")
                 sys.stdout.flush()
-                drawn = True
 
                 key = _read_key()
                 if key == "up":
@@ -319,7 +355,7 @@ def ask_path(prompt: str, current: str, must_exist: bool) -> str:
         if not raw:
             return current
         expanded = os.path.expandvars(os.path.expanduser(raw))
-        if must_exist and not Path(expanded).is_dir():
+        if must_exist and not is_accessible_directory(expanded):
             print(f"{RED}Nicht erreichbar: {expanded}{RESET}")
             continue
         return expanded
@@ -332,23 +368,50 @@ def pause() -> None:
         pass
 
 
-def show_summary(settings: Settings) -> None:
-    print()
-    print(f"{BOLD}── MetaTrace Sync ──────────────────────────────{RESET}")
-    print(f"  {DIM}Quelle      {RESET}{shorten(settings.src) or '–'}")
-    print(f"  {DIM}Ziel        {RESET}{shorten(settings.dst) or '–'}")
-    print(f"  {DIM}Modus       {RESET}{settings.mode}")
-    print(f"  {DIM}Threads     {RESET}{settings.threads}")
+def summary_rows(settings: Settings) -> list[str]:
+    """Return current settings as rows for rendering above the main menu."""
     skips = ", ".join(settings.skip_dirs) if settings.skip_dirs else "–"
-    print(f"  {DIM}Skip-Ordner {RESET}{skips}")
+    return [
+        f"{BOLD}── MetaTrace Sync ──────────────────────────────{RESET}",
+        f"  {DIM}Quelle      {RESET}{shorten(settings.src) or '–'}",
+        f"  {DIM}Ziel        {RESET}{shorten(settings.dst) or '–'}",
+        f"  {DIM}Modus       {RESET}{settings.mode}",
+        f"  {DIM}Threads     {RESET}{settings.threads}",
+        f"  {DIM}Skip-Ordner {RESET}{skips}",
+        "",
+    ]
+
+
+def framed_rows(rows: list[str], width: int | None = None) -> list[str]:
+    """Wrap menu rows in a solid terminal-width frame, clipping long text."""
+    terminal_width = shutil.get_terminal_size(fallback=(80, 24)).columns
+    width = min(width or 72, terminal_width)
+    width = max(20, width)
+    content_width = width - 4
+
+    def framed_row(row: str) -> str:
+        visible = ANSI_ESCAPE.sub("", row)
+        if len(visible) > content_width:
+            row = shorten(visible, content_width)
+            visible = row
+        visible_length = len(visible)
+        padding = " " * max(0, content_width - visible_length)
+        return f"{CYAN}{FRAME_BLOCK}{RESET} {row}{padding} {CYAN}{FRAME_BLOCK}{RESET}"
+
+    return [
+        f"{CYAN}{FRAME_BLOCK * width}{RESET}",
+        *(framed_row(row) for row in rows),
+        f"{CYAN}{FRAME_BLOCK * width}{RESET}",
+    ]
 
 
 def edit_skip_dirs(settings: Settings) -> None:
     while True:
+        clear_screen()
         options = ["+ Ordner hinzufügen"]
         options += [f"− {entry}" for entry in settings.skip_dirs]
         options.append("Fertig")
-        choice = choose("Skip-Ordner (quellrelative Pfade)", options)
+        choice = choose("Skip-Ordner (quellrelative Pfade)", options, framed=True)
         if choice is None or choice == len(options) - 1:
             return
         if choice == 0:
@@ -370,6 +433,7 @@ def edit_skip_dirs(settings: Settings) -> None:
 
 def edit_settings(settings: Settings, config_path: Path) -> None:
     while True:
+        clear_screen()
         options = [
             f"Quellordner   {shorten(settings.src) or '–'}",
             f"Zielordner    {shorten(settings.dst) or '–'}",
@@ -378,7 +442,7 @@ def edit_settings(settings: Settings, config_path: Path) -> None:
             f"Skip-Ordner   {len(settings.skip_dirs)}",
             "Zurück",
         ]
-        choice = choose("Einstellungen", options)
+        choice = choose("Einstellungen", options, framed=True)
         if choice is None or choice == 5:
             return
         if choice == 0:
@@ -386,7 +450,9 @@ def edit_settings(settings: Settings, config_path: Path) -> None:
         elif choice == 1:
             settings.dst = pick_folder("Ziel (lokaler Ordner)", settings.dst)
         elif choice == 2:
-            picked = choose("Modus", [f"{m} – {MODE_INFO[m]}" for m in MODES])
+            picked = choose(
+                "Modus", [f"{m} – {MODE_INFO[m]}" for m in MODES], framed=True
+            )
             if picked is not None:
                 settings.mode = MODES[picked]
         elif choice == 3:
@@ -475,25 +541,27 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = Settings.load(args.config)
 
-    while True:
-        show_summary(settings)
-        choice = choose(
-            "Hauptmenü",
-            [
-                "Testlauf starten (Dry-Run)",
-                "Kopieren starten",
-                "Einstellungen bearbeiten",
-                "Beenden",
-            ],
-        )
-        if choice in (None, 3):
-            return 0
-        if choice == 0:
-            run_flow(settings, dry_run=True)
-        elif choice == 1:
-            run_flow(settings, dry_run=False)
-        elif choice == 2:
-            edit_settings(settings, args.config)
+    with alternate_screen():
+        while True:
+            choice = choose(
+                "Hauptmenü",
+                [
+                    "Testlauf starten (Dry-Run)",
+                    "Kopieren starten",
+                    "Einstellungen bearbeiten",
+                    "Beenden",
+                ],
+                preamble=summary_rows(settings),
+                framed=True,
+            )
+            if choice in (None, 3):
+                return 0
+            if choice == 0:
+                run_flow(settings, dry_run=True)
+            elif choice == 1:
+                run_flow(settings, dry_run=False)
+            elif choice == 2:
+                edit_settings(settings, args.config)
 
 
 if __name__ == "__main__":

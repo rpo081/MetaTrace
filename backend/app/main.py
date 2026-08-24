@@ -77,12 +77,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.indexer = indexer
         app.state.search = SearchService(indexer, settings)
 
-        scheduler = ScanScheduler(indexer, settings.rescan_interval_min)
+        scheduler = ScanScheduler(indexer)
         app.state.scheduler = scheduler
         if settings.run_initial_scan_on_start and indexer.count == 0 and _store_has_files(settings):
             log.info("empty index detected; starting initial scan of %s", settings.store_path)
             scheduler.trigger_now()
-        scheduler.start()
         log.info("MetaTrace ready (indexed=%d, model=%s:%s)",
                  indexer.count, settings.model_name, settings.model_pretrained)
         yield

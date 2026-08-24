@@ -12,6 +12,11 @@ def test_settings_defaults_when_config_missing(tmp_path):
     assert settings.skip_dirs == []
 
 
+def test_menu_includes_all_mode():
+    assert mod.MODES == ("all", "final", "manual")
+    assert "alle erlaubten Bilder" in mod.MODE_INFO["all"]
+
+
 def test_settings_defaults_on_corrupt_json(tmp_path):
     config = tmp_path / "config.json"
     config.write_text("{not json", encoding="utf-8")
@@ -70,6 +75,43 @@ def test_shorten_collapses_long_paths_with_middle_ellipsis():
     assert collapsed.startswith("a" * 9) and "…" in collapsed
 
 
+def test_summary_rows_include_current_settings():
+    settings = mod.Settings(src=r"\\server\share", dst=r"G:\images", mode="manual", threads=16)
+    rows = mod.summary_rows(settings)
+    assert any("server" in row for row in rows)
+    assert any("manual" in row for row in rows)
+    assert any("16" in row for row in rows)
+
+
+def test_framed_rows_adds_top_and_bottom_borders():
+    rows = mod.framed_rows(["source", "destination"], width=20)
+    assert mod.ANSI_ESCAPE.sub("", rows[0]) == "░" * 20
+    assert mod.ANSI_ESCAPE.sub("", rows[-1]) == "░" * 20
+    assert rows[1].endswith("░\x1b[0m")
+    assert rows[2].endswith("░\x1b[0m")
+    assert len(mod.ANSI_ESCAPE.sub("", rows[1])) == 20
+    assert len(mod.ANSI_ESCAPE.sub("", rows[2])) == 20
+
+
+def test_framed_rows_wraps_folder_browser_header():
+    rows = mod.framed_rows(["Quelle", "Pfad: C:/images"], width=30)
+    assert all(len(mod.ANSI_ESCAPE.sub("", row)) == 30 for row in rows)
+
+
+def test_framed_rows_clips_long_paths_inside_the_border():
+    rows = mod.framed_rows([r"Quelle: \\server\share\very\long\folder\name"], width=30)
+    assert all(len(mod.ANSI_ESCAPE.sub("", row)) == 30 for row in rows)
+    assert "…" in mod.ANSI_ESCAPE.sub("", rows[1])
+
+
+def test_alternate_screen_restores_primary_buffer(capsys):
+    with mod.alternate_screen():
+        pass
+    output = capsys.readouterr().out
+    assert "\x1b[?1049h" in output
+    assert output.endswith("\x1b[?1049l")
+
+
 def test_list_subdirectories_filters_and_sorts(tmp_path):
     (tmp_path / "beta").mkdir()
     (tmp_path / "Alpha").mkdir()
@@ -81,3 +123,10 @@ def test_list_subdirectories_filters_and_sorts(tmp_path):
 
 def test_list_subdirectories_missing_dir_returns_empty(tmp_path):
     assert mod.list_subdirectories(tmp_path / "nope") == []
+
+
+def test_is_accessible_directory_uses_longpath(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(mod.si, "longpath", lambda path: calls.append(path) or str(tmp_path))
+    assert mod.is_accessible_directory(r"\\server\share")
+    assert calls == [r"\\server\share"]

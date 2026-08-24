@@ -88,7 +88,6 @@ def stats(request: Request) -> dict:
         "last_report": st.indexer.status["last_report"],
         "last_scan": db.kv_get(s.db_path, "last_scan"),
         "model": f"{s.model_name}:{s.model_pretrained}",
-        "rescan_interval_min": s.rescan_interval_min,
         "exiftool": metadata.exiftool_available(),
         "max_upload_mb": s.max_upload_mb,
     }

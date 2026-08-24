@@ -10,8 +10,9 @@ CIFS share (network) ──scripts/sync_images.py──> local SSD store ──i
 React UI (drag & drop) ──> FastAPI  /api/search  (upload → CLIP embed → top-K) ────┘
 ```
 
-- **Backend**: FastAPI + CLIP (`open_clip`, ViT-B-32 QuickGELU, OpenAI weights, CPU)
-  + FAISS flat inner-product index in RAM + SQLite metadata.
+- **Backend**: FastAPI + CLIP (`open_clip`, ViT-B-32 QuickGELU, OpenAI weights,
+  `DEVICE=auto` with CUDA when available) + FAISS flat inner-product index in RAM
+  + SQLite metadata.
 - **Frontend**: Vite + React + TS; served as static files by the same container.
 - **Sync**: `scripts/sync_images.py` mirrors the CIFS share to local SSD
   (incremental, long-path safe, Windows-first).
@@ -25,19 +26,21 @@ docker compose up -d --build
 ```
 
 The container mounts your local image mirror read-only at `/store`; database,
-FAISS index and thumbnails live in the named volume `/data`. On first start an
+FAISS index and thumbnails live under the host bind mount `./data:/data`. On first start an
 initial scan kicks off automatically (progress via `GET /api/stats`). CLIP
 weights are baked into the image — no downloads at runtime.
 
-Keep the share in sync with a scheduled task (Windows example below); the app
-picks up changes on its next periodic rescan.
+Keep the share in sync with a scheduled task (Windows example below), then
+trigger rescans on demand via `POST /api/rescan` (or from the web UI button).
 
 ### Platforms
 
 The image builds natively for `linux/amd64` (x64 servers, Intel Macs) and
 `linux/arm64` (Apple Silicon). A plain local build always targets the host
 architecture, so `docker compose up -d --build` works unchanged everywhere.
-All pinned wheels (torch/torchvision CPU builds, faiss-cpu) exist for both.
+
+When an NVIDIA GPU is available to Docker, MetaTrace uses it for CLIP
+embedding (`DEVICE=auto` selects CUDA first). FAISS remains CPU (`faiss-cpu`).
 
 To publish one multi-arch image from a single machine:
 
@@ -53,24 +56,45 @@ CLIP weight layers is slow, later builds hit the layer cache.
 ## Syncing from the network share
 
 ```powershell
-python scripts\sync_images.py "\\nas\share\renderings" "D:\imagestore" --prune
+python scripts\sync_images.py "\\nas\share\renderings" "D:\imagestore" --mode final --threads 8
 ```
+
+The script is Windows-only and uses `robocopy` for transfer speed. Python walks
+the tree and dispatches per-folder `robocopy` calls.
 
 | Flag | Meaning |
 |---|---|
-| `--prune` | delete local files that vanished from the share |
+| `--mode {all,final,manual}` | required mode selector |
+| `all` | copy all allowed images under source |
+| `final` | copy all allowed images under folders containing `final` |
+| `manual` | copy all images under folders containing `manual`; otherwise only files with `manual` in the filename |
+| `--skip-dir PATH` | source-relative subfolder to skip (repeatable) |
 | `--dry-run` | show what would happen without changing anything |
 | `--threads N` | parallel copy workers (default 8) |
-| `-v / --verbose` | log every file action |
 
-Change detection uses `(size, mtime)` with a 2 s tolerance for CIFS timestamp
-rounding. Exit code is `2` when any operation failed.
+Allowed file types are `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff`.
+Maximum copied file size is strictly `< 20 MiB`.
+Exit code is `2` when any folder transfer failed.
+
+### Interactive sync menu (Windows)
+
+```powershell
+python scripts\sync_menu.py
+```
+
+`sync_menu.py` is an interactive wrapper around `sync_images.py` with:
+
+- Arrow-key UI for source, destination, mode, threads, and skip folders
+- Dry-run and copy actions from the same main menu
+- Config persistence in `~/.metatrace_sync_menu.json`
+- Folder browser plus manual path entry
+- Alternate terminal screen buffer for clean redraws
 
 ### Windows Task Scheduler (nightly sync)
 
 ```powershell
 schtasks /Create /TN "MetaTrace sync" /SC DAILY /ST 03:00 ^
-  /TR "python C:\metatrace\scripts\sync_images.py \\nas\share\renderings D:\imagestore --prune"
+  /TR "python C:\metatrace\scripts\sync_images.py \\nas\share\renderings D:\imagestore --mode manual --threads 8 --skip-dir AT"
 ```
 
 ## Development setup
@@ -101,10 +125,10 @@ into the image.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/search?k=24&min_score=0.1` | multipart `file` upload → ranked results |
-| `GET /api/thumb/{id}?size=512` | cached JPEG thumbnail (64–1024 px) |
+| `GET /api/thumb/{id}?size=512` | cached PNG thumbnail (64–1024 px, alpha preserved) |
 | `GET /api/file/{id}` | original file stream |
 | `POST /api/rescan?rebuild=false` | trigger incremental scan (409 if busy) |
-| `GET /api/stats` | index/db counts, scan state/report, model, exiftool status |
+| `GET /api/stats` | index/db counts, scan state/report (`seen`, `processed`, etc.), model, exiftool status |
 | `GET /api/health` | liveness |
 
 Search response: `score` = cosine similarity (exact sha256 hits are pinned to
@@ -125,7 +149,7 @@ Admin UI: from the browser console run `localStorage.setItem('metatrace_admin_to
   `METATRACE_CORS_ORIGINS` (comma-separated) only if you serve the UI from a
   different origin.
 - Security headers on every response: `X-Content-Type-Options: nosniff`,
-  `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`,
+  `Content-Security-Policy: default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'`,
   `Referrer-Policy: no-referrer`.
 - Uploads are streamed and aborted with `413` as soon as they exceed
   `MAX_UPLOAD_MB`; error responses are generic (details go to server logs).
@@ -146,22 +170,22 @@ Environment variables (or `.env`, see `.env.example`):
 | `MODEL_NAME` | `ViT-B-32-quickgelu` | open_clip architecture |
 | `MODEL_PRETRAINED` | `openai` | weight source |
 | `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; see macOS note in implementation notes |
-| `BATCH_SIZE` | `64` | embedding batch size |
-| `RESCAN_INTERVAL_MIN` | `30` | background rescan interval |
+| `BATCH_SIZE` | `128` | embedding batch size |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `24` / `200` | result count limits |
 | `MIN_SCORE_DEFAULT` | `0.0` | default cosine cutoff |
 | `THUMB_SIZE` | `512` | default thumbnail max side |
 | `MAX_UPLOAD_MB` | `64` | query upload limit (streamed, early-abort) |
-| `ALLOWED_EXTENSIONS` | `.psd,.jpg,.jpeg,.png` | indexed formats |
+| `ALLOWED_EXTENSIONS` | `.psd,.jpg,.jpeg,.png,.tif,.tiff` | indexed formats |
 | `METATRACE_ADMIN_TOKEN` | — | require `X-Admin-Token` on `POST /api/rescan`; empty = trusted-LAN mode |
 | `METATRACE_CORS_ORIGINS` | — | comma-separated CORS origins; empty = no CORS (same-origin SPA) |
 
 ## Performance notes
 
 - Index: 20k × 512 float32 ≈ 40 MB RAM → exact flat search, sub-millisecond queries.
-- Initial CPU indexing of 20k images ≈ several minutes; rescans touch only new/
-  changed files.
+- Embedding can use CUDA (`DEVICE=auto`) when NVIDIA GPU passthrough is enabled.
+- Rescan time is often dominated by filesystem inventory/stat calls on large
+  bind mounts; GPU helps embedding work, not full-tree metadata walks.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
 - Thumbnails are generated once per `(id, size)` and served from disk cache.
 
@@ -181,7 +205,7 @@ Environment variables (or `.env`, see `.env.example`):
 - **XMP**: extracted with `exiftool -json -XMP:all` (embedded tags only; sidecar
   `.xmp` files are ignored). If exiftool is missing, indexing still works but
   XMP fields stay empty and `/api/stats` flags it. Each exiftool invocation is
-  capped at 120 s, bounding the worst case per 64-file batch (~2 h including
+  capped at 120 s, bounding the worst case per 128-file batch (~4 h including
   per-file retries) instead of hanging a scan indefinitely.
 - **Self-healing index**: on startup the FAISS index is reconciled against the
   DB (`ntotal` vs row count). A missing or corrupt index file (quarantined as

@@ -29,7 +29,6 @@ def client(tmp_path, monkeypatch):
         store_path=store,
         data_path=tmp_path / "data",
         run_initial_scan_on_start=False,
-        rescan_interval_min=60,
         batch_size=8,
         network_root=r"\\nas\share",
     )
@@ -66,7 +65,7 @@ def test_stats_sanitized_and_parity(client):
     body = r.json()
     assert r.status_code == 200
     for key in ("indexed", "db_count", "state", "last_report", "last_scan",
-                "model", "rescan_interval_min", "exiftool", "max_upload_mb"):
+                "model", "exiftool", "max_upload_mb"):
         assert key in body
     # sanitized: no store/network topology disclosure
     assert "store_path" not in body
@@ -112,7 +111,6 @@ def test_cors_enabled_when_configured(tmp_path, monkeypatch):
         store_path=store,
         data_path=tmp_path / "data",
         run_initial_scan_on_start=False,
-        rescan_interval_min=60,
         cors_origins="http://localhost:5173, https://ui.example.com",
     )
     app = create_app(settings)
@@ -225,7 +223,6 @@ def test_rescan_admin_token_enforced(tmp_path, monkeypatch):
         store_path=store,
         data_path=tmp_path / "data",
         run_initial_scan_on_start=False,
-        rescan_interval_min=60,
         admin_token="s3cret",
     )
     app = create_app(settings)
@@ -274,7 +271,6 @@ def _minimal_app(tmp_path, **overrides):
         store_path=store,
         data_path=tmp_path / "data",
         run_initial_scan_on_start=False,
-        rescan_interval_min=60,
         **overrides,
     )
     return create_app(settings), settings

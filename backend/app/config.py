@@ -23,9 +23,8 @@ class Settings(BaseSettings):
     model_pretrained: str = "openai"
     # auto = cuda > mps > cpu. Use "cpu" on macOS: faiss + MPS segfault.
     device: str = "auto"
-    batch_size: int = 64
+    batch_size: int = 128
 
-    rescan_interval_min: int = 30
     run_initial_scan_on_start: bool = True
 
     default_top_k: int = 24

@@ -37,7 +37,6 @@ export interface Stats {
   last_report: ScanReport | null
   last_scan: string | null
   model: string
-  rescan_interval_min: number
   exiftool: boolean
   /** Upload limit in MiB; optional until the backend exposes it in /api/stats. */
   max_upload_mb?: number

@@ -40,6 +40,26 @@ def test_final_mode_runs_robocopy_only_for_final_folders(tmp_path, monkeypatch):
     assert stats.folders == 1 and stats.failed == 0
 
 
+def test_all_mode_runs_robocopy_for_every_image_folder(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _touch(src / "render.png")
+    _touch(src / "nested" / "detail.tif")
+    _touch(src / "notes" / "readme.txt")
+    calls = []
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, check: calls.append(command) or SimpleNamespace(returncode=0),
+    )
+
+    stats = mod.Stats()
+    mod.copy_matching_folders(src, dst, "all", 8, False, stats)
+    assert len(calls) == 2
+    assert all("*.png" in command and "*.tif" in command for command in calls)
+    assert stats.folders == 2 and stats.failed == 0
+
+
 def test_manual_mode_runs_robocopy_for_manual_path_folders(tmp_path, monkeypatch):
     src = tmp_path / "src"
     dst = tmp_path / "dst"
