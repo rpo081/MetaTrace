@@ -255,10 +255,10 @@ def test_scan_does_not_hold_lock_during_faiss_query(env):
     original_walk = ix._walk_store
     result: dict = {}
 
-    def slow_walk():
+    def slow_walk(pause=None):
         started.set()
         release.wait(timeout=10)  # simulate long scan work without the lock
-        return original_walk()
+        return original_walk(pause)
 
     def run_scan():
         try:
