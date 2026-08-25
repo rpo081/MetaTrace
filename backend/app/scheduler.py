@@ -20,7 +20,21 @@ class ScanScheduler:
 
     def resume(self) -> bool:
         """Resume a paused scan."""
-        return self.indexer.resume()
+        if self.indexer.resume():
+            return True
+        if self.indexer.status.get("state") != "paused" or not self.indexer.has_resume_checkpoint():
+            return False
+        if not self._busy.acquire(blocking=False):
+            return False
+
+        def run() -> None:
+            try:
+                self.indexer.resume_from_checkpoint()
+            finally:
+                self._busy.release()
+
+        threading.Thread(target=run, daemon=True).start()
+        return True
 
     def trigger_now(self, rebuild: bool = False, delta_info: dict | None = None) -> bool:
         """Start a scan in a background thread. Returns False if one is running.
@@ -29,6 +43,8 @@ class ScanScheduler:
             rebuild: Force complete index rebuild
             delta_info: Optional delta information from store_snapshot.py
         """
+        if self.indexer.status.get("state") == "paused":
+            return False
         if not self._busy.acquire(blocking=False):
             return False
 

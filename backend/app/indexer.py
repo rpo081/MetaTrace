@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -18,6 +19,7 @@ log = logging.getLogger(__name__)
 
 # Files whose (size, mtime) differ by less than this are treated as unchanged.
 MTIME_TOLERANCE_SEC = 2.0
+SCAN_CHECKPOINT_VERSION = 1
 
 
 def _quarantine_corrupt_index(index_file: Path) -> Path:
@@ -89,6 +91,7 @@ class Indexer:
         self._scan_lock = threading.Lock()
         self._pause_gate = threading.Event()
         self._pause_gate.set()
+        self._resume_checkpoint: dict | None = None
         self.index = None  # faiss.IndexIDMap2, created lazily on first batch
         self.status: dict = {"state": "idle", "last_report": None}
 
@@ -138,6 +141,7 @@ class Indexer:
                     n_db,
                 )
                 self._force_full_rebuild("missing index file")
+        self._load_resume_checkpoint()
 
     def incremental(
         self,
@@ -157,6 +161,7 @@ class Indexer:
         """
         report = ScanReport(trigger=trigger, started_at=time.time())
         with self._scan_lock:
+            self._resume_checkpoint = None
             self._pause_gate.set()
             self._set_state("scanning")
             self.status["last_report"] = report.as_dict()
@@ -167,6 +172,8 @@ class Indexer:
                     progress(current.as_dict())
 
             try:
+                mode = "delta" if delta_info and not force_rebuild else "full"
+                self._save_planning_checkpoint(mode, force_rebuild, report, delta_info)
                 # Try delta-optimized path if available and not forcing rebuild
                 if delta_info and not force_rebuild:
                     self._process_delta(report, delta_info, publish)
@@ -178,7 +185,10 @@ class Indexer:
             finally:
                 report.duration_sec = round(time.time() - report.started_at, 2)
                 self.status["last_report"] = report.as_dict()
-                if self.status["state"] != "error":
+                if self.status["state"] == "paused":
+                    self._resume_checkpoint = self._read_resume_checkpoint()
+                elif self.status["state"] != "error":
+                    self._clear_resume_checkpoint()
                     self._set_state("idle")
         return report
 
@@ -191,18 +201,93 @@ class Indexer:
 
     def resume(self) -> bool:
         """Resume a paused scan."""
-        if self.status["state"] != "paused":
+        if self.status["state"] != "paused" or not self._scan_lock.locked():
             return False
         self._pause_gate.set()
         return True
+
+    def has_resume_checkpoint(self) -> bool:
+        return self._resume_checkpoint is not None or self._resume_checkpoint_file.exists()
+
+    def resume_from_checkpoint(self) -> ScanReport:
+        checkpoint = self._resume_checkpoint or self._read_resume_checkpoint()
+        if checkpoint is None:
+            raise RuntimeError("no persisted scan checkpoint available")
+        if checkpoint.get("phase") != "pending":
+            self._clear_resume_checkpoint()
+            return self.incremental(
+                trigger=checkpoint.get("trigger", "resume"),
+                force_rebuild=bool(checkpoint.get("force_rebuild", False)),
+                delta_info=checkpoint.get("delta_info"),
+            )
+
+        report = self._report_from_dict(checkpoint.get("report", {}))
+        with self._scan_lock:
+            self._pause_gate.set()
+            self._set_state("scanning")
+            self.status["last_report"] = report.as_dict()
+
+            def publish(current: ScanReport) -> None:
+                self.status["last_report"] = current.as_dict()
+
+            working = self._clone_published_index()
+            pending = self._disk_files_for_rel_paths(
+                checkpoint.get("remaining_rel_paths", []),
+                report,
+            )
+            pending_added = set(checkpoint.get("remaining_added_rel_paths", []))
+            known = db.list_entries(self.settings.db_path)
+            try:
+                working = self._run_pending_batches(
+                    report=report,
+                    working=working,
+                    pending=pending,
+                    added_rel_paths=pending_added,
+                    known=known,
+                    mode=str(checkpoint.get("mode", "full")),
+                    force_rebuild=bool(checkpoint.get("force_rebuild", False)),
+                    progress=publish,
+                )
+                self._publish_index(working)
+                db.kv_set(
+                    self.settings.db_path,
+                    "last_scan",
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                )
+                self._clear_resume_checkpoint()
+                log.info(
+                    "resumed scan done (%s): seen=%d added=%d updated=%d removed=%d failed=%d in %.1fs",
+                    report.trigger,
+                    report.seen,
+                    report.added,
+                    report.updated,
+                    report.removed,
+                    report.failed,
+                    report.duration_sec or 0.0,
+                )
+            except Exception:
+                self._set_state("error")
+                raise
+            finally:
+                report.duration_sec = round(time.time() - report.started_at, 2)
+                self.status["last_report"] = report.as_dict()
+                if self.status["state"] != "error":
+                    self._set_state("idle")
+        return report
 
     # ------------------------------------------------------------ internals
     def _set_state(self, state: str) -> None:
         self.status["state"] = state
 
-    def _wait_if_paused(self, report: ScanReport, progress=None) -> None:
+    @property
+    def _resume_checkpoint_file(self) -> Path:
+        return self.settings.data_path / "scan_checkpoint.json"
+
+    def _wait_if_paused(self, report: ScanReport, progress=None, snapshot=None) -> None:
         if self._pause_gate.is_set():
             return
+        if snapshot:
+            snapshot()
         if self.status["state"] != "paused":
             self._set_state("paused")
             self.status["last_report"] = report.as_dict()
@@ -210,10 +295,213 @@ class Indexer:
                 progress(report)
         self._pause_gate.wait()
         if self.status["state"] == "paused":
+            self._clear_resume_checkpoint()
             self._set_state("scanning")
             self.status["last_report"] = report.as_dict()
             if progress:
                 progress(report)
+
+    def _model_key(self) -> str:
+        return f"{self.settings.model_name}:{self.settings.model_pretrained}"
+
+    def _read_resume_checkpoint(self) -> dict | None:
+        path = self._resume_checkpoint_file
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not read scan checkpoint: %s", exc)
+            return None
+        if data.get("version") != SCAN_CHECKPOINT_VERSION:
+            log.warning("ignoring unknown scan checkpoint version: %r", data.get("version"))
+            return None
+        if data.get("model") != self._model_key():
+            log.warning("discarding scan checkpoint for different model: %s", data.get("model"))
+            self._clear_resume_checkpoint()
+            return None
+        return data
+
+    def _write_resume_checkpoint(self, payload: dict) -> None:
+        path = self._resume_checkpoint_file
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, path)
+        self._resume_checkpoint = payload
+
+    def _clear_resume_checkpoint(self) -> None:
+        self._resume_checkpoint = None
+        self._resume_checkpoint_file.unlink(missing_ok=True)
+
+    def _save_planning_checkpoint(
+        self,
+        mode: str,
+        force_rebuild: bool,
+        report: ScanReport,
+        delta_info: dict | None = None,
+    ) -> None:
+        payload = {
+            "version": SCAN_CHECKPOINT_VERSION,
+            "phase": "planning",
+            "mode": mode,
+            "force_rebuild": force_rebuild,
+            "trigger": report.trigger,
+            "report": report.as_dict(),
+            "delta_info": delta_info,
+            "model": self._model_key(),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        self._write_resume_checkpoint(payload)
+
+    def _save_pending_checkpoint(
+        self,
+        mode: str,
+        force_rebuild: bool,
+        report: ScanReport,
+        remaining_rel_paths: list[str],
+        remaining_added_rel_paths: set[str],
+    ) -> None:
+        payload = {
+            "version": SCAN_CHECKPOINT_VERSION,
+            "phase": "pending",
+            "mode": mode,
+            "force_rebuild": force_rebuild,
+            "trigger": report.trigger,
+            "report": report.as_dict(),
+            "remaining_rel_paths": remaining_rel_paths,
+            "remaining_added_rel_paths": sorted(
+                rel_path for rel_path in remaining_rel_paths if rel_path in remaining_added_rel_paths
+            ),
+            "model": self._model_key(),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        self._write_resume_checkpoint(payload)
+
+    def _load_resume_checkpoint(self) -> None:
+        checkpoint = self._read_resume_checkpoint()
+        if checkpoint is None:
+            return
+        self._resume_checkpoint = checkpoint
+        self._pause_gate.clear()
+        self._set_state("paused")
+        self.status["last_report"] = checkpoint.get("report")
+        log.info("found paused scan checkpoint with %d remaining file(s)", len(checkpoint.get("remaining_rel_paths", [])))
+
+    def _report_from_dict(self, data: dict) -> ScanReport:
+        report = ScanReport(trigger=str(data.get("trigger", "resume")))
+        report.started_at = float(data.get("started_at", time.time()))
+        report.duration_sec = float(data.get("duration_sec", 0.0))
+        report.seen = int(data.get("seen", 0))
+        report.processed = int(data.get("processed", 0))
+        report.added = int(data.get("added", 0))
+        report.updated = int(data.get("updated", 0))
+        report.removed = int(data.get("removed", 0))
+        report.unchanged = int(data.get("unchanged", 0))
+        report.failed = int(data.get("failed", 0))
+        return report
+
+    def _clone_published_index(self):
+        import faiss
+
+        with self._lock:
+            return faiss.clone_index(self.index) if self.index is not None else None
+
+    def _publish_index(self, index) -> None:
+        import faiss
+
+        if index is None:
+            self.settings.index_file.unlink(missing_ok=True)
+            with self._lock:
+                self.index = None
+            return
+        tmp = self.settings.index_file.with_suffix(".faiss.tmp")
+        faiss.write_index(index, str(tmp))
+        tmp.replace(self.settings.index_file)
+        with self._lock:
+            self.index = index
+
+    def _disk_files_for_rel_paths(self, rel_paths: list[str], report: ScanReport) -> list[DiskFile]:
+        pending: list[DiskFile] = []
+        for rel_path in rel_paths:
+            abs_path = self.settings.store_path / rel_path
+            try:
+                stat = abs_path.stat()
+            except OSError as exc:
+                report.failed += 1
+                report.processed += 1
+                report.errors.append(f"{rel_path}: {exc}")
+                log.warning("resume stat failed: %s (%s)", rel_path, exc)
+                continue
+            pending.append(
+                DiskFile(
+                    rel_path=rel_path,
+                    abs_path=abs_path,
+                    size=stat.st_size,
+                    mtime=stat.st_mtime,
+                )
+            )
+        return pending
+
+    def _run_pending_batches(
+        self,
+        *,
+        report: ScanReport,
+        working,
+        pending: list[DiskFile],
+        added_rel_paths: set[str],
+        known: dict[str, object],
+        mode: str,
+        force_rebuild: bool,
+        progress,
+    ):
+        batch = max(1, self.settings.batch_size)
+        for i in range(0, len(pending), batch):
+            remaining = pending[i:]
+            self._wait_if_paused(
+                report,
+                progress,
+                snapshot=lambda remaining=remaining, working=working: self._snapshot_pause_state(
+                    report,
+                    working,
+                    mode,
+                    force_rebuild,
+                    remaining,
+                    added_rel_paths,
+                ),
+            )
+            chunk = pending[i : i + batch]
+            working = self._process_chunk(
+                chunk,
+                added_rel_paths,
+                known,
+                report,
+                working,
+                progress,
+            )
+            if progress:
+                progress(report)
+        return working
+
+    def _snapshot_pause_state(
+        self,
+        report: ScanReport,
+        working,
+        mode: str,
+        force_rebuild: bool,
+        remaining: list[DiskFile],
+        added_rel_paths: set[str],
+    ) -> None:
+        self._publish_index(working)
+        self._save_pending_checkpoint(
+            mode,
+            force_rebuild,
+            report,
+            [f.rel_path for f in remaining],
+            added_rel_paths,
+        )
 
     def _force_full_rebuild(self, reason: str) -> None:
         """Reset DB + in-memory index so the next scan re-embeds everything."""
@@ -265,16 +553,20 @@ class Indexer:
         return found
 
     def _scan(self, report: ScanReport, force_rebuild: bool, progress) -> None:
-        import faiss
-
         s = self.settings
         db.init_db(s.db_path)
-        disk = self._walk_store(lambda: self._wait_if_paused(report, progress))
+        disk = self._walk_store(
+            lambda: self._wait_if_paused(
+                report,
+                progress,
+                snapshot=lambda: self._save_planning_checkpoint("full", force_rebuild, report),
+            )
+        )
         report.seen = len(disk)
         known = db.list_entries(s.db_path)
 
         stored_model = db.kv_get(s.db_path, "model")
-        current_model = f"{s.model_name}:{s.model_pretrained}"
+        current_model = self._model_key()
         if stored_model and stored_model != current_model:
             log.warning("embedding model changed %s -> %s; rebuilding index",
                         stored_model, current_model)
@@ -284,16 +576,7 @@ class Indexer:
             known = {}
             working = None
         else:
-            # Snapshot the current index as our private working copy — CLONED,
-            # never the published object itself. FAISS releases the GIL inside
-            # remove_ids/add_with_ids, so mutating the object that lock-free
-            # readers are querying is undefined behavior (crashes). The clone
-            # is cheap at this scale (20k x 512 float32 ≈ 40 MB) and the
-            # published generation stays frozen until the atomic swap below.
-            with self._lock:
-                working = (
-                    faiss.clone_index(self.index) if self.index is not None else None
-                )
+            working = self._clone_published_index()
         db.kv_set(s.db_path, "model", current_model)
 
         to_add = [f for r, f in disk.items() if r not in known]
@@ -316,31 +599,20 @@ class Indexer:
             db.remove_ids(s.db_path, removed_ids)
             report.removed = len(removed_ids)
 
-        # Drop stale vectors of updated files before re-adding them.
-        update_ids = sorted(known[f.rel_path].id for f in to_update)
-        if update_ids and working is not None:
-            working.remove_ids(np.array(update_ids, dtype="int64"))
-
         pending = to_add + to_update
         added_rel_paths = {f.rel_path for f in to_add}
-        batch = max(1, s.batch_size)
-        for i in range(0, len(pending), batch):
-            self._wait_if_paused(report, progress)
-            chunk = pending[i : i + batch]
-            working = self._process_chunk(
-                chunk, added_rel_paths, report, working, progress
-            )
-            if progress:
-                progress(report)
+        working = self._run_pending_batches(
+            report=report,
+            working=working,
+            pending=pending,
+            added_rel_paths=added_rel_paths,
+            known=known,
+            mode="full",
+            force_rebuild=force_rebuild,
+            progress=progress,
+        )
 
-        if working is not None:
-            tmp = s.index_file.with_suffix(".faiss.tmp")
-            faiss.write_index(working, str(tmp))
-            tmp.replace(s.index_file)
-        # Publish the rebuilt index atomically; concurrent searches that hold
-        # the old reference finish safely against the previous generation.
-        with self._lock:
-            self.index = working
+        self._publish_index(working)
         db.kv_set(s.db_path, "last_scan", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         log.info(
             "scan done (%s): seen=%d added=%d updated=%d removed=%d failed=%d in %.1fs",
@@ -356,8 +628,6 @@ class Indexer:
         - Only processes the delta file lists
         - Minimal DB lookups
         """
-        import faiss
-
         s = self.settings
         db.init_db(s.db_path)
         known = db.list_entries(s.db_path)
@@ -371,15 +641,16 @@ class Indexer:
         report.seen = len(deleted_paths) + len(created_paths) + len(modified_paths)
 
         # Snapshot the current index for mutation
-        with self._lock:
-            working = (
-                faiss.clone_index(self.index) if self.index is not None else None
-            )
+        working = self._clone_published_index()
 
         # === STEP 1: Handle deleted files ===
         removed_ids = []
         for rel_path in deleted_paths:
-            self._wait_if_paused(report, progress)
+            self._wait_if_paused(
+                report,
+                progress,
+                snapshot=lambda: self._save_planning_checkpoint("delta", False, report, delta_info),
+            )
             log.info("checking deleted rel_path: %r (in known: %s)", rel_path, rel_path in known)
             if rel_path in known:
                 removed_ids.append(known[rel_path].id)
@@ -408,7 +679,11 @@ class Indexer:
         added_set = set()
         
         for rel_path in created_paths:
-            self._wait_if_paused(report, progress)
+            self._wait_if_paused(
+                report,
+                progress,
+                snapshot=lambda: self._save_planning_checkpoint("delta", False, report, delta_info),
+            )
             abs_path = s.store_path / rel_path
             if abs_path.exists():
                 stat = abs_path.stat()
@@ -421,11 +696,13 @@ class Indexer:
                 added_set.add(rel_path)
         
         # Remove stale vectors for modified files before re-adding
-        update_ids = []
         for rel_path in modified_paths:
-            self._wait_if_paused(report, progress)
+            self._wait_if_paused(
+                report,
+                progress,
+                snapshot=lambda: self._save_planning_checkpoint("delta", False, report, delta_info),
+            )
             if rel_path in known:
-                update_ids.append(known[rel_path].id)
                 abs_path = s.store_path / rel_path
                 if abs_path.exists():
                     stat = abs_path.stat()
@@ -436,32 +713,20 @@ class Indexer:
                         mtime=stat.st_mtime
                     ))
         
-        if update_ids and working is not None:
-            working.remove_ids(np.array(update_ids, dtype="int64"))
-            report.processed += len(update_ids)
-
-        # Process the to_process files in batches
-        batch = max(1, s.batch_size)
-        for i in range(0, len(to_process), batch):
-            self._wait_if_paused(report, progress)
-            chunk = to_process[i : i + batch]
-            working = self._process_chunk(
-                chunk, added_set, report, working, progress
-            )
-            if progress:
-                progress(report)
+        working = self._run_pending_batches(
+            report=report,
+            working=working,
+            pending=to_process,
+            added_rel_paths=added_set,
+            known=known,
+            mode="delta",
+            force_rebuild=False,
+            progress=progress,
+        )
 
         # === STEP 3: Publish updated index ===
-        if working is not None:
-            tmp = s.index_file.with_suffix(".faiss.tmp")
-            faiss.write_index(working, str(tmp))
-            tmp.replace(s.index_file)
-            log.info("wrote new index: ntotal=%d", working.ntotal)
-        
-        with self._lock:
-            self.index = working
-            log.info("published index to self.index, new ntotal=%d", 
-                    (working.ntotal if working else 0))
+        self._publish_index(working)
+        log.info("published index to self.index, new ntotal=%d", (working.ntotal if working else 0))
         
         db.kv_set(s.db_path, "last_scan", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         
@@ -483,6 +748,7 @@ class Indexer:
         self,
         chunk: list[DiskFile],
         added_set: set[str],
+        known: dict[str, object],
         report: ScanReport,
         index,
         progress=None,
@@ -496,7 +762,6 @@ class Indexer:
         shas: dict[str, str] = {}
         dims: dict[str, tuple[int, int]] = {}
         for f in chunk:
-            self._wait_if_paused(report, progress)
             try:
                 img = embeddings.decode_image(f.abs_path)
                 images.append(img)
@@ -523,6 +788,14 @@ class Indexer:
             report.errors.append(f"embed batch failed: {exc}")
             log.exception("embed batch failed")
             return index
+
+        update_ids = [
+            known[f.rel_path].id
+            for f in ok_files
+            if f.rel_path not in added_set and f.rel_path in known
+        ]
+        if update_ids and index is not None:
+            index.remove_ids(np.array(update_ids, dtype="int64"))
 
         if index is None:
             dim = int(vectors.shape[1])

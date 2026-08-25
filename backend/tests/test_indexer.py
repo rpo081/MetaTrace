@@ -301,22 +301,24 @@ def test_scan_publishes_live_report_for_inventory_and_batches(env):
 
 def test_scan_can_pause_and_resume_between_files(env, monkeypatch):
     ix, store, _settings = env
+    ix.settings.batch_size = 1
     _png(store / "a.png", (1, 0, 0))
     _png(store / "b.png", (2, 0, 0))
 
-    started = threading.Event()
+    first_batch_done = threading.Event()
     release_first = threading.Event()
-    original_decode = indexer_mod.embeddings.decode_image
+    original_process = ix._process_chunk
     calls = {"n": 0}
 
-    def slow_decode(path):
+    def slow_process(*args, **kwargs):
+        result = original_process(*args, **kwargs)
         calls["n"] += 1
         if calls["n"] == 1:
-            started.set()
+            first_batch_done.set()
             assert release_first.wait(timeout=5)
-        return original_decode(path)
+        return result
 
-    monkeypatch.setattr(indexer_mod.embeddings, "decode_image", slow_decode)
+    monkeypatch.setattr(ix, "_process_chunk", slow_process)
 
     result = {}
 
@@ -325,7 +327,7 @@ def test_scan_can_pause_and_resume_between_files(env, monkeypatch):
 
     worker = threading.Thread(target=run_scan, daemon=True)
     worker.start()
-    assert started.wait(timeout=5)
+    assert first_batch_done.wait(timeout=5)
     assert ix.request_pause()
     release_first.set()
 
@@ -341,3 +343,42 @@ def test_scan_can_pause_and_resume_between_files(env, monkeypatch):
     assert "report" in result
     assert result["report"].added == 2
     assert ix.status["state"] == "idle"
+
+
+def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
+    ix, store, settings = env
+    _png(store / "a.png", (1, 1, 1))
+    ix.incremental(trigger="seed-a")
+    _png(store / "b.png", (2, 2, 2))
+
+    checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    checkpoint_path.write_text(
+        '{"version":1,"phase":"pending","mode":"full","force_rebuild":false,'
+        '"trigger":"resume-test","model":"ViT-B-32-quickgelu:openai",'
+        '"report":{"trigger":"resume-test","started_at":1.0,"duration_sec":0.0,'
+        '"seen":2,"processed":1,"added":1,"updated":0,"removed":0,'
+        '"unchanged":0,"failed":0,"error_count":0},'
+        '"remaining_rel_paths":["b.png"],"remaining_added_rel_paths":["b.png"],'
+        '"updated_at":"2026-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+
+    decoded = []
+    original_decode = indexer_mod.embeddings.decode_image
+
+    def tracking_decode(path):
+        decoded.append(path.name)
+        return original_decode(path)
+
+    monkeypatch.setattr(indexer_mod.embeddings, "decode_image", tracking_decode)
+
+    resumed = indexer_mod.Indexer(settings)
+    resumed.load_or_create()
+    assert resumed.status["state"] == "paused"
+    assert resumed.count == 1
+
+    report = resumed.resume_from_checkpoint()
+    assert report.added == 2
+    assert resumed.count == 2
+    assert decoded == ["b.png"]
+    assert not checkpoint_path.exists()

@@ -284,6 +284,30 @@ def test_rescan_pause_resume_conflicts(client, monkeypatch):
     assert resumed.status_code == 409
 
 
+def test_startup_exposes_paused_state_from_resume_checkpoint(tmp_path, monkeypatch):
+    app, settings = _minimal_app(tmp_path, _monkeypatch=monkeypatch)
+    settings.ensure_dirs()
+    (settings.store_path / "x.png").write_bytes(b"not used")
+    checkpoint = settings.data_path / "scan_checkpoint.json"
+    checkpoint.write_text(
+        '{"version":1,"phase":"pending","mode":"full","force_rebuild":false,'
+        '"trigger":"resume-test","model":"ViT-B-32-quickgelu:openai",'
+        '"report":{"trigger":"resume-test","started_at":1.0,"duration_sec":0.0,'
+        '"seen":10,"processed":4,"added":4,"updated":0,"removed":0,'
+        '"unchanged":0,"failed":0,"error_count":0},'
+        '"remaining_rel_paths":["later.png"],"remaining_added_rel_paths":["later.png"],'
+        '"updated_at":"2026-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+    with TestClient(app) as c:
+        stats = c.get("/api/stats")
+        assert stats.status_code == 200
+        body = stats.json()
+        assert body["state"] == "paused"
+        assert body["last_report"]["processed"] == 4
+    app.state.scheduler.stop()
+
+
 def _minimal_app(tmp_path, **overrides):
     def fake_embed(images, settings):
         v = np.ones((len(images), 8), dtype=np.float32)
