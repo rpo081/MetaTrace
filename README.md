@@ -46,6 +46,13 @@ architecture, so `docker compose up -d --build` works unchanged everywhere.
 When an NVIDIA GPU is available to Docker, MetaTrace uses it for CLIP
 embedding (`DEVICE=auto` selects CUDA first). FAISS remains CPU (`faiss-cpu`).
 
+On hosts without an NVIDIA GPU (or for testing uncommitted changes without
+publishing an image), build and run a CPU-only container locally:
+
+```bash
+docker compose -f docker-compose.cpu.local.yml up -d --build
+```
+
 To publish one multi-arch image from a single machine:
 
 ```bash
