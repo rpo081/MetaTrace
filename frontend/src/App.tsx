@@ -37,6 +37,12 @@ function ScanReportLine({ report, state }: { report: ScanReport; state: string |
   )
 }
 
+function inventorySourceLabel(source: Stats['inventory_source']): string | null {
+  if (source === 'snapshot') return 'Inventory: snapshot'
+  if (source === 'walk') return 'Inventory: filesystem walk'
+  return null
+}
+
 function DeltaInfo({
   delta,
   onRescanWithDelta,
@@ -208,6 +214,7 @@ export default function App() {
   const scanning = stats?.state === 'scanning'
   const paused = stats?.state === 'paused'
   const scanActive = scanning || paused
+  const inventoryLabel = inventorySourceLabel(stats?.inventory_source)
 
   const controlScan = useCallback(
     async (action: 'pause' | 'resume') => {
@@ -240,6 +247,7 @@ export default function App() {
                 {scanning ? 'scanning…' : paused ? 'paused' : `${stats.indexed} indexed`}
               </span>
               <span className="muted">{stats.model}</span>
+              {scanActive && inventoryLabel && <span className="muted">{inventoryLabel}</span>}
               {!stats.exiftool && (
                 <span
                   className="pill pill-warn"

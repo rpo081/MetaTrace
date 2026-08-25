@@ -186,6 +186,9 @@ Environment variables (or `.env`, see `.env.example`):
 - Embedding can use CUDA (`DEVICE=auto`) when NVIDIA GPU passthrough is enabled.
 - Rescan time is often dominated by filesystem inventory/stat calls on large
   bind mounts; GPU helps embedding work, not full-tree metadata walks.
+- For large first-time builds, `scripts/store_snapshot.py` also writes
+  `data/store_snapshot_latest.json`; when the index/DB are empty, the backend
+  can use that snapshot as the initial inventory to skip the first full walk.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
 - Thumbnails are generated once per `(id, size)` and served from disk cache.
 

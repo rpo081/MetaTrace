@@ -87,6 +87,7 @@ def stats(request: Request) -> dict:
         "db_count": db.count(s.db_path),
         "state": st.indexer.status["state"],
         "last_report": st.indexer.status["last_report"],
+        "inventory_source": st.indexer.status.get("inventory_source"),
         "last_scan": db.kv_get(s.db_path, "last_scan"),
         "model": f"{s.model_name}:{s.model_pretrained}",
         "exiftool": metadata.exiftool_available(),

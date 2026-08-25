@@ -74,6 +74,7 @@ def test_stats_sanitized_and_parity(client):
     # parity observability
     assert body["indexed"] == body["db_count"] == 1
     assert body["max_upload_mb"] == client.app.state.settings.max_upload_mb
+    assert body["inventory_source"] is None
 
 
 def test_last_report_has_error_count_only(client):

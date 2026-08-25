@@ -60,6 +60,7 @@ export interface Stats {
   indexed: number
   state: string
   last_report: ScanReport | null
+  inventory_source?: 'snapshot' | 'walk' | null
   last_scan: string | null
   model: string
   exiftool: boolean

@@ -6,6 +6,7 @@ from pathlib import Path
 
 SNAPSHOT_FILE = "ssd_snapshot.json"
 DATA_FOLDER = Path(__file__).parent.parent / "data"  # ../data/ Ordner
+LATEST_SNAPSHOT_FILE = DATA_FOLDER / "store_snapshot_latest.json"
 
 def generate_rescan_json(created, deleted, modified):
     """Erzeugt ein JSON für die WebApp mit Änderungen als Rescan-Basis."""
@@ -63,6 +64,33 @@ def scan_drive(root_path):
                 continue
     return file_state
 
+
+def build_snapshot_payload(root_path, file_state):
+    return {
+        "version": 1,
+        "created_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "root_path": os.path.abspath(root_path),
+        "file_count": len(file_state),
+        "files": file_state,
+    }
+
+
+def load_snapshot_file(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict) and "files" in data:
+        return data["files"]
+    return data
+
+
+def save_snapshot_files(root_path, file_state):
+    payload = build_snapshot_payload(root_path, file_state)
+    with open(SNAPSHOT_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+    DATA_FOLDER.mkdir(parents=True, exist_ok=True)
+    with open(LATEST_SNAPSHOT_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
 def detect_changes(root_path):
     print("Scanne aktuellen Zustand der SSD...")
     start_time = time.time()
@@ -71,13 +99,11 @@ def detect_changes(root_path):
 
     if not os.path.exists(SNAPSHOT_FILE):
         print("Kein alter Snapshot gefunden. Speichere aktuellen Zustand als Basis...")
-        with open(SNAPSHOT_FILE, "w") as f:
-            json.dump(current_state, f)
+        save_snapshot_files(root_path, current_state)
         return
 
     print("Lade vorherigen Snapshot...")
-    with open(SNAPSHOT_FILE, "r") as f:
-        previous_state = json.load(f)
+    previous_state = load_snapshot_file(SNAPSHOT_FILE)
 
     # Mengen-Vergleich für extrem schnelle Differenz-Berechnung
     current_paths = set(current_state.keys())
@@ -115,8 +141,7 @@ def detect_changes(root_path):
     generate_rescan_json(created, deleted, modified)
 
     # Snapshot aktualisieren
-    with open(SNAPSHOT_FILE, "w") as f:
-        json.dump(current_state, f)
+    save_snapshot_files(root_path, current_state)
 
 if __name__ == "__main__":
     # Pfad zur SSD

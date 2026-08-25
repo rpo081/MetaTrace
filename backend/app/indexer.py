@@ -75,6 +75,25 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
+def _snapshot_meta_to_disk_file(store_root: Path, rel_path: str, meta) -> DiskFile | None:
+    if isinstance(meta, dict):
+        mtime = meta.get("mtime")
+        size = meta.get("size")
+    elif isinstance(meta, (list, tuple)) and len(meta) >= 2:
+        mtime, size = meta[0], meta[1]
+    else:
+        return None
+    if mtime is None or size is None:
+        return None
+    normalized = rel_path.replace("\\", "/")
+    return DiskFile(
+        rel_path=normalized,
+        abs_path=store_root / Path(normalized),
+        size=int(size),
+        mtime=float(mtime),
+    )
+
+
 class Indexer:
     """Owns the FAISS index; all mutations happen under an internal RLock.
 
@@ -93,7 +112,7 @@ class Indexer:
         self._pause_gate.set()
         self._resume_checkpoint: dict | None = None
         self.index = None  # faiss.IndexIDMap2, created lazily on first batch
-        self.status: dict = {"state": "idle", "last_report": None}
+        self.status: dict = {"state": "idle", "last_report": None, "inventory_source": None}
 
     # ------------------------------------------------------------------ api
     @property
@@ -164,6 +183,7 @@ class Indexer:
             self._resume_checkpoint = None
             self._pause_gate.set()
             self._set_state("scanning")
+            self.status["inventory_source"] = None
             self.status["last_report"] = report.as_dict()
 
             def publish(current: ScanReport) -> None:
@@ -278,6 +298,9 @@ class Indexer:
     # ------------------------------------------------------------ internals
     def _set_state(self, state: str) -> None:
         self.status["state"] = state
+
+    def _set_inventory_source(self, source: str | None) -> None:
+        self.status["inventory_source"] = source
 
     @property
     def _resume_checkpoint_file(self) -> Path:
@@ -552,18 +575,58 @@ class Indexer:
                 found[rel] = DiskFile(rel, ap, st.st_size, st.st_mtime)
         return found
 
+    def _load_initial_snapshot_inventory(self) -> dict[str, DiskFile] | None:
+        if not self.settings.use_store_snapshot_for_initial_scan:
+            return None
+        path = self.settings.store_snapshot_file
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not read store snapshot %s: %s", path.name, exc)
+            return None
+
+        entries = payload.get("files") if isinstance(payload, dict) and "files" in payload else payload
+        if not isinstance(entries, dict):
+            log.warning("ignoring invalid store snapshot payload in %s", path.name)
+            return None
+
+        disk: dict[str, DiskFile] = {}
+        for rel_path, meta in entries.items():
+            if Path(rel_path).suffix.lower() not in self.settings.extensions:
+                continue
+            disk_file = _snapshot_meta_to_disk_file(self.settings.store_path, rel_path, meta)
+            if disk_file is None:
+                log.warning("ignoring invalid store snapshot entry for %s", rel_path)
+                continue
+            disk[disk_file.rel_path] = disk_file
+
+        if not disk:
+            log.warning("store snapshot %s contained no usable image entries", path.name)
+            return None
+        log.info("using store snapshot %s for initial inventory (%d files)", path.name, len(disk))
+        self._set_inventory_source("snapshot")
+        return disk
+
     def _scan(self, report: ScanReport, force_rebuild: bool, progress) -> None:
         s = self.settings
         db.init_db(s.db_path)
-        disk = self._walk_store(
-            lambda: self._wait_if_paused(
-                report,
-                progress,
-                snapshot=lambda: self._save_planning_checkpoint("full", force_rebuild, report),
-            )
-        )
-        report.seen = len(disk)
         known = db.list_entries(s.db_path)
+        disk = None
+        if not force_rebuild and self.index is None and not known:
+            disk = self._load_initial_snapshot_inventory()
+        if disk is None:
+            self._set_inventory_source("walk")
+            disk = self._walk_store(
+                lambda: self._wait_if_paused(
+                    report,
+                    progress,
+                    snapshot=lambda: self._save_planning_checkpoint("full", force_rebuild, report),
+                )
+            )
+        report.seen = len(disk)
 
         stored_model = db.kv_get(s.db_path, "model")
         current_model = self._model_key()

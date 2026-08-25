@@ -1,4 +1,5 @@
 """Indexer tests with a deterministic fake embedder (no CLIP download)."""
+import json
 import threading
 import time
 
@@ -128,6 +129,26 @@ def test_persistence_across_instances(env, tmp_path):
     ix2 = indexer_mod.Indexer(s)
     ix2.load_or_create()
     assert ix2.count == 1
+
+
+def test_initial_scan_can_use_store_snapshot_inventory(env, monkeypatch):
+    ix, store, s = env
+    _png(store / "a.png", (5, 5, 5))
+    s.ensure_dirs()
+    snapshot = {
+        "version": 1,
+        "created_utc": "2026-08-25T00:00:00Z",
+        "root_path": str(store),
+        "file_count": 1,
+        "files": {"a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size}},
+    }
+    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
+
+    rep = ix.incremental(trigger="initial")
+    assert rep.added == 1
+    assert ix.count == 1
 
 
 def test_deleted_index_self_heals_via_full_rebuild(env, caplog):

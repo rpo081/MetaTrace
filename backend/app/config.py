@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     batch_size: int = 128
 
     run_initial_scan_on_start: bool = True
+    use_store_snapshot_for_initial_scan: bool = True
 
     default_top_k: int = 24
     max_top_k: int = 200
@@ -84,6 +85,10 @@ class Settings(BaseSettings):
     @property
     def thumbs_dir(self) -> Path:
         return self.data_path / "thumbs"
+
+    @property
+    def store_snapshot_file(self) -> Path:
+        return self.data_path / "store_snapshot_latest.json"
 
     @property
     def max_upload_bytes(self) -> int:
