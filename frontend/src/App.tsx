@@ -5,6 +5,9 @@ import DetailPanel from './components/DetailPanel'
 import ResultGrid from './components/ResultGrid'
 import type { ScanReport, SearchResponse, SearchResult, Stats, RescanDeltaResponse } from './types'
 
+const IDLE_REFRESH_MS = 10_000
+const ACTIVE_SCAN_REFRESH_MS = 1_000
+
 function fmtDuration(sec: number): string {
   return sec >= 10 ? `${Math.round(sec)}s` : `${Math.round(sec * 10) / 10}s`
 }
@@ -102,14 +105,14 @@ export default function App() {
 
   useEffect(refreshStats, [refreshStats])
   useEffect(() => {
-    const t = setInterval(refreshStats, 10_000)
+    const t = setInterval(refreshStats, IDLE_REFRESH_MS)
     return () => clearInterval(t)
   }, [refreshStats])
-  // Fast-poll while a scan is active: short scans would otherwise look
-  // stalled for up to one 10 s interval before the UI notices completion.
+  // Poll more frequently during scans, but keep it coarse enough to avoid
+  // turning status updates into a steady stream of access-log noise.
   useEffect(() => {
     if (stats?.state !== 'scanning') return
-    const t = setInterval(refreshStats, 250)
+    const t = setInterval(refreshStats, ACTIVE_SCAN_REFRESH_MS)
     return () => clearInterval(t)
   }, [stats?.state, refreshStats])
   // A finished scan retires the transient "Rescan started." notice.
