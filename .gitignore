@@ -19,6 +19,9 @@ data/
 *.faiss.tmp
 thumbs/
 metatrace.db*
+scripts/snapshots/*.json
+scripts/snapshots/diffs/*.json
+scripts/*.json
 
 # Editors / OS
 .DS_Store
