@@ -198,7 +198,7 @@ Environment variables (or `.env`, see `.env.example`):
 | `MODEL_NAME` | `ViT-B-32-quickgelu` | open_clip architecture |
 | `MODEL_PRETRAINED` | `openai` | weight source |
 | `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; see macOS note in implementation notes |
-| `BATCH_SIZE` | `256` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency |
+| `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency — keep modest for print-resolution renders |
 | `DECODE_WORKERS` | `4` | scan-time threads for image decode + sha256 (PIL/psd-tools) |
 | `DECODE_PREFETCH` | `16` | max fully decoded images held in memory during a scan chunk (bounded window) |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |

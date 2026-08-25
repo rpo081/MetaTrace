@@ -16,6 +16,8 @@ services:
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
       # Force CPU mode for CLIP embeddings.
       DEVICE: ${DEVICE:-cpu}
+      # Images per embedding batch; keep modest for print-resolution renders.
+      BATCH_SIZE: ${BATCH_SIZE:-64}
       # Mutating-endpoint guard (X-Admin-Token header); empty = trusted-LAN mode.
       METATRACE_ADMIN_TOKEN: ${METATRACE_ADMIN_TOKEN:-}
       # Extra CORS origins (comma-separated); empty = no CORS middleware.

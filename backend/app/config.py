@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     model_pretrained: str = "openai"
     # auto = cuda > mps > cpu. Use "cpu" on macOS: faiss + MPS segfault.
     device: str = "auto"
-    batch_size: int = 256
+    # Images per embedding batch. 64 keeps peak RAM sane for print-resolution
+    # renders (a single decoded frame can be hundreds of MB); GPU hosts can
+    # raise it via .env for throughput.
+    batch_size: int = 64
     # Scan-time decode parallelism: decode+hash workers and the max number of
     # fully decoded images held in memory at once (bounded window).
     decode_workers: int = 4

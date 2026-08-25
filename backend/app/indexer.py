@@ -417,6 +417,18 @@ class Indexer:
         checkpoint = self._read_resume_checkpoint()
         if checkpoint is None:
             return
+        if checkpoint.get("phase") != "pending":
+            # A "planning" checkpoint means the previous scan died before
+            # finishing its first batch — resuming would redo everything
+            # anyway. Discard it instead of booting into a phantom "paused"
+            # state that also blocks RUN_INITIAL_SCAN_ON_START (trigger_now
+            # refuses while paused).
+            log.info(
+                "discarding stale %r-phase scan checkpoint (nothing processed yet)",
+                checkpoint.get("phase"),
+            )
+            self._clear_resume_checkpoint()
+            return
         self._resume_checkpoint = checkpoint
         self._pause_gate.clear()
         self._set_state("paused")

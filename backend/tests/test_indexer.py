@@ -485,3 +485,39 @@ def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
     assert decoded == ["b.png"]
     assert resumed.status["inventory_source"] == "snapshot"
     assert not checkpoint_path.exists()
+
+
+def test_stale_planning_checkpoint_is_discarded_on_boot(env, caplog):
+    """A crash/restart mid-scan leaves a 'planning'-phase checkpoint behind.
+    Booting with it must NOT flip the app into a phantom 'paused' state:
+    that blocked RUN_INITIAL_SCAN_ON_START (trigger_now refuses while paused)
+    and made every container restart look like a rescan stuck at zero."""
+    import logging
+
+    ix, store, settings = env
+    _png(store / "a.png", (1, 1, 1))
+    ix.incremental(trigger="seed")
+    settings.ensure_dirs()
+    checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    checkpoint_path.write_text(
+        '{"version":1,"phase":"planning","mode":"full","force_rebuild":false,'
+        '"trigger":"manual-api","model":"ViT-B-32-quickgelu:openai",'
+        '"report":{"trigger":"manual-api","started_at":1.0,"duration_sec":0.0,'
+        '"seen":0,"processed":0,"added":0,"updated":0,"removed":0,'
+        '"unchanged":0,"failed":0,"error_count":0},'
+        '"delta_info":null,'
+        '"updated_at":"2026-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+
+    ix2 = indexer_mod.Indexer(settings)
+    with caplog.at_level(logging.INFO):
+        ix2.load_or_create()
+    assert ix2.status["state"] == "idle"
+    assert not checkpoint_path.exists()
+    assert any("discarding stale" in r.getMessage() for r in caplog.records)
+
+    # Auto initial scan (or manual rescan) can start right away.
+    rep = ix2.incremental(trigger="initial-scan")
+    assert rep.unchanged == 1 and rep.failed == 0
+    assert ix2.status["state"] == "idle"
