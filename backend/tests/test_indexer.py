@@ -1,4 +1,7 @@
 """Indexer tests with a deterministic fake embedder (no CLIP download)."""
+import threading
+import time
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -294,3 +297,47 @@ def test_scan_publishes_live_report_for_inventory_and_batches(env):
     assert updates[-1]["added"] == 9
     assert ix.status["state"] == "idle"
     assert ix.status["last_report"]["added"] == 9
+
+
+def test_scan_can_pause_and_resume_between_files(env, monkeypatch):
+    ix, store, _settings = env
+    _png(store / "a.png", (1, 0, 0))
+    _png(store / "b.png", (2, 0, 0))
+
+    started = threading.Event()
+    release_first = threading.Event()
+    original_decode = indexer_mod.embeddings.decode_image
+    calls = {"n": 0}
+
+    def slow_decode(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            started.set()
+            assert release_first.wait(timeout=5)
+        return original_decode(path)
+
+    monkeypatch.setattr(indexer_mod.embeddings, "decode_image", slow_decode)
+
+    result = {}
+
+    def run_scan():
+        result["report"] = ix.incremental(trigger="pause-test")
+
+    worker = threading.Thread(target=run_scan, daemon=True)
+    worker.start()
+    assert started.wait(timeout=5)
+    assert ix.request_pause()
+    release_first.set()
+
+    deadline = time.time() + 5
+    while time.time() < deadline and ix.status["state"] != "paused":
+        time.sleep(0.01)
+
+    assert ix.status["state"] == "paused"
+    assert worker.is_alive()
+    assert ix.resume()
+
+    worker.join(timeout=10)
+    assert "report" in result
+    assert result["report"].added == 2
+    assert ix.status["state"] == "idle"

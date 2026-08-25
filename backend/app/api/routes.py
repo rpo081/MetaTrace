@@ -266,3 +266,21 @@ def rescan(request: Request, rebuild: bool = Query(default=False), use_delta: bo
         "has_delta": has_delta,
         "delta_summary": delta_info["summary"] if has_delta else None
     }
+
+
+@router.post("/rescan/pause", status_code=202)
+def pause_rescan(request: Request) -> dict:
+    _require_admin_token(request)
+    ok = request.app.state.scheduler.pause()
+    if not ok:
+        raise HTTPException(409, "no running scan to pause")
+    return {"paused": True}
+
+
+@router.post("/rescan/resume", status_code=202)
+def resume_rescan(request: Request) -> dict:
+    _require_admin_token(request)
+    ok = request.app.state.scheduler.resume()
+    if not ok:
+        raise HTTPException(409, "scan is not paused")
+    return {"resumed": True}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, getStats, searchImage, triggerRescan, getRescanDelta } from './api'
+import { ApiError, getStats, searchImage, triggerRescan, getRescanDelta, pauseRescan, resumeRescan } from './api'
 import Dropzone from './components/Dropzone'
 import DetailPanel from './components/DetailPanel'
 import ResultGrid from './components/ResultGrid'
@@ -12,15 +12,19 @@ function fmtDuration(sec: number): string {
   return sec >= 10 ? `${Math.round(sec)}s` : `${Math.round(sec * 10) / 10}s`
 }
 
-function ScanReportLine({ report, scanning }: { report: ScanReport; scanning: boolean }) {
+function ScanReportLine({ report, state }: { report: ScanReport; state: string | undefined }) {
   const indexed = report.added + report.updated
   return (
     <div className="scan-report" role="status">
       <span className="scan-report-label">
-        {scanning ? `Scanning (${report.trigger})` : `Last scan (${report.trigger})`}
+        {state === 'paused'
+          ? `Paused scan (${report.trigger})`
+          : state === 'scanning'
+            ? `Scanning (${report.trigger})`
+            : `Last scan (${report.trigger})`}
       </span>
       <span className="mono">
-        {scanning ? (
+        {state === 'scanning' || state === 'paused' ? (
           <>{report.processed} / {report.seen} scanned · {indexed} embedded · {report.failed} failed</>
         ) : (
           <>
@@ -111,7 +115,7 @@ export default function App() {
   // Poll more frequently during scans, but keep it coarse enough to avoid
   // turning status updates into a steady stream of access-log noise.
   useEffect(() => {
-    if (stats?.state !== 'scanning') return
+    if (stats?.state !== 'scanning' && stats?.state !== 'paused') return
     const t = setInterval(refreshStats, ACTIVE_SCAN_REFRESH_MS)
     return () => clearInterval(t)
   }, [stats?.state, refreshStats])
@@ -202,6 +206,28 @@ export default function App() {
   )
 
   const scanning = stats?.state === 'scanning'
+  const paused = stats?.state === 'paused'
+  const scanActive = scanning || paused
+
+  const controlScan = useCallback(
+    async (action: 'pause' | 'resume') => {
+      try {
+        if (action === 'pause') {
+          await pauseRescan()
+          setNotice('Scan pausing…')
+        } else {
+          await resumeRescan()
+          setNotice('Scan resumed.')
+        }
+        setError(null)
+        refreshStats()
+      } catch (e) {
+        setNotice(null)
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [refreshStats],
+  )
 
   return (
     <div className="app">
@@ -210,8 +236,8 @@ export default function App() {
         <div className="topbar-stats">
           {stats ? (
             <>
-              <span className={`pill ${scanning ? 'pill-busy' : ''}`}>
-                {scanning ? 'scanning…' : `${stats.indexed} indexed`}
+              <span className={`pill ${scanActive ? 'pill-busy' : ''}`}>
+                {scanning ? 'scanning…' : paused ? 'paused' : `${stats.indexed} indexed`}
               </span>
               <span className="muted">{stats.model}</span>
               {!stats.exiftool && (
@@ -222,7 +248,17 @@ export default function App() {
                   exiftool missing · no XMP
                 </span>
               )}
-              {!scanning && delta?.status === 'ok' && delta.summary && (
+              {scanning && (
+                <button className="btn btn-sm" onClick={() => controlScan('pause')}>
+                  Pause
+                </button>
+              )}
+              {paused && (
+                <button className="btn btn-sm" onClick={() => controlScan('resume')}>
+                  Resume
+                </button>
+              )}
+              {!scanActive && delta?.status === 'ok' && delta.summary && (
                 <DeltaInfo
                   delta={delta}
                   onRescanWithDelta={() => rescan(false, true)}
@@ -230,12 +266,12 @@ export default function App() {
                   loading={scanning}
                 />
               )}
-              {!scanning && (delta?.status === 'no_delta' || !delta) && (
+              {!scanActive && (delta?.status === 'no_delta' || !delta) && (
                 <button
                   className="btn"
                   onClick={() => rescan(false, true)}
-                  disabled={scanning}
-                  title={scanning ? 'A scan is already running' : 'Scan (delta-optimized if available)'}
+                  disabled={scanActive}
+                  title={scanActive ? 'A scan is already running' : 'Scan (delta-optimized if available)'}
                 >
                   Rescan
                 </button>
@@ -247,7 +283,7 @@ export default function App() {
         </div>
       </header>
 
-      {stats?.last_report && <ScanReportLine report={stats.last_report} scanning={scanning} />}
+      {stats?.last_report && <ScanReportLine report={stats.last_report} state={stats.state} />}
 
       <main className="layout">
         <section className="sidebar">

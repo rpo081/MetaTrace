@@ -87,6 +87,8 @@ class Indexer:
         self._lock = threading.RLock()
         # Serializes scans against each other (searches stay lock-free).
         self._scan_lock = threading.Lock()
+        self._pause_gate = threading.Event()
+        self._pause_gate.set()
         self.index = None  # faiss.IndexIDMap2, created lazily on first batch
         self.status: dict = {"state": "idle", "last_report": None}
 
@@ -155,6 +157,7 @@ class Indexer:
         """
         report = ScanReport(trigger=trigger, started_at=time.time())
         with self._scan_lock:
+            self._pause_gate.set()
             self._set_state("scanning")
             self.status["last_report"] = report.as_dict()
 
@@ -179,9 +182,38 @@ class Indexer:
                     self._set_state("idle")
         return report
 
+    def request_pause(self) -> bool:
+        """Pause the active scan at the next cooperative checkpoint."""
+        if self.status["state"] != "scanning":
+            return False
+        self._pause_gate.clear()
+        return True
+
+    def resume(self) -> bool:
+        """Resume a paused scan."""
+        if self.status["state"] != "paused":
+            return False
+        self._pause_gate.set()
+        return True
+
     # ------------------------------------------------------------ internals
     def _set_state(self, state: str) -> None:
         self.status["state"] = state
+
+    def _wait_if_paused(self, report: ScanReport, progress=None) -> None:
+        if self._pause_gate.is_set():
+            return
+        if self.status["state"] != "paused":
+            self._set_state("paused")
+            self.status["last_report"] = report.as_dict()
+            if progress:
+                progress(report)
+        self._pause_gate.wait()
+        if self.status["state"] == "paused":
+            self._set_state("scanning")
+            self.status["last_report"] = report.as_dict()
+            if progress:
+                progress(report)
 
     def _force_full_rebuild(self, reason: str) -> None:
         """Reset DB + in-memory index so the next scan re-embeds everything."""
@@ -208,14 +240,18 @@ class Indexer:
             )
             self._force_full_rebuild("index/DB count mismatch")
 
-    def _walk_store(self) -> dict[str, DiskFile]:
+    def _walk_store(self, pause=None) -> dict[str, DiskFile]:
         found: dict[str, DiskFile] = {}
         root = Path(self.settings.store_path)
         exts = self.settings.extensions
         for dirpath, dirnames, filenames in os.walk(root):
+            if pause:
+                pause()
             dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
             dp = Path(dirpath)
             for name in sorted(filenames):
+                if pause:
+                    pause()
                 if Path(name).suffix.lower() not in exts:
                     continue
                 ap = dp / name
@@ -233,7 +269,7 @@ class Indexer:
 
         s = self.settings
         db.init_db(s.db_path)
-        disk = self._walk_store()
+        disk = self._walk_store(lambda: self._wait_if_paused(report, progress))
         report.seen = len(disk)
         known = db.list_entries(s.db_path)
 
@@ -289,6 +325,7 @@ class Indexer:
         added_rel_paths = {f.rel_path for f in to_add}
         batch = max(1, s.batch_size)
         for i in range(0, len(pending), batch):
+            self._wait_if_paused(report, progress)
             chunk = pending[i : i + batch]
             working = self._process_chunk(
                 chunk, added_rel_paths, report, working, progress
@@ -342,6 +379,7 @@ class Indexer:
         # === STEP 1: Handle deleted files ===
         removed_ids = []
         for rel_path in deleted_paths:
+            self._wait_if_paused(report, progress)
             log.info("checking deleted rel_path: %r (in known: %s)", rel_path, rel_path in known)
             if rel_path in known:
                 removed_ids.append(known[rel_path].id)
@@ -370,6 +408,7 @@ class Indexer:
         added_set = set()
         
         for rel_path in created_paths:
+            self._wait_if_paused(report, progress)
             abs_path = s.store_path / rel_path
             if abs_path.exists():
                 stat = abs_path.stat()
@@ -384,6 +423,7 @@ class Indexer:
         # Remove stale vectors for modified files before re-adding
         update_ids = []
         for rel_path in modified_paths:
+            self._wait_if_paused(report, progress)
             if rel_path in known:
                 update_ids.append(known[rel_path].id)
                 abs_path = s.store_path / rel_path
@@ -403,6 +443,7 @@ class Indexer:
         # Process the to_process files in batches
         batch = max(1, s.batch_size)
         for i in range(0, len(to_process), batch):
+            self._wait_if_paused(report, progress)
             chunk = to_process[i : i + batch]
             working = self._process_chunk(
                 chunk, added_set, report, working, progress
@@ -455,6 +496,7 @@ class Indexer:
         shas: dict[str, str] = {}
         dims: dict[str, tuple[int, int]] = {}
         for f in chunk:
+            self._wait_if_paused(report, progress)
             try:
                 img = embeddings.decode_image(f.abs_path)
                 images.append(img)

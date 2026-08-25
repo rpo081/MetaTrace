@@ -257,6 +257,33 @@ def test_rescan_allowed_without_token_but_warns_once(client, caplog, monkeypatch
     client.app.state.scheduler.stop()
 
 
+def test_rescan_pause_resume_routes(client, monkeypatch):
+    pause_calls = []
+    resume_calls = []
+
+    monkeypatch.setattr(client.app.state.scheduler, "pause", lambda: pause_calls.append(True) or True)
+    monkeypatch.setattr(client.app.state.scheduler, "resume", lambda: resume_calls.append(True) or True)
+
+    paused = client.post("/api/rescan/pause")
+    resumed = client.post("/api/rescan/resume")
+
+    assert paused.status_code == 202
+    assert resumed.status_code == 202
+    assert pause_calls == [True]
+    assert resume_calls == [True]
+
+
+def test_rescan_pause_resume_conflicts(client, monkeypatch):
+    monkeypatch.setattr(client.app.state.scheduler, "pause", lambda: False)
+    monkeypatch.setattr(client.app.state.scheduler, "resume", lambda: False)
+
+    paused = client.post("/api/rescan/pause")
+    resumed = client.post("/api/rescan/resume")
+
+    assert paused.status_code == 409
+    assert resumed.status_code == 409
+
+
 def _minimal_app(tmp_path, **overrides):
     def fake_embed(images, settings):
         v = np.ones((len(images), 8), dtype=np.float32)

@@ -14,6 +14,14 @@ class ScanScheduler:
     def stop(self) -> None:
         """Compatibility hook for application shutdown."""
 
+    def pause(self) -> bool:
+        """Request that the running scan pauses at the next checkpoint."""
+        return self.indexer.request_pause()
+
+    def resume(self) -> bool:
+        """Resume a paused scan."""
+        return self.indexer.resume()
+
     def trigger_now(self, rebuild: bool = False, delta_info: dict | None = None) -> bool:
         """Start a scan in a background thread. Returns False if one is running.
         

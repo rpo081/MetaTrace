@@ -67,6 +67,22 @@ export async function triggerRescan(rebuild = false, useDelta = true): Promise<v
   if (!res.ok) await parseError(res)
 }
 
+export async function pauseRescan(): Promise<void> {
+  const headers: Record<string, string> = {}
+  const token = getAdminToken()
+  if (token) headers['X-Admin-Token'] = token
+  const res = await fetch('/api/rescan/pause', { method: 'POST', headers })
+  if (!res.ok) await parseError(res)
+}
+
+export async function resumeRescan(): Promise<void> {
+  const headers: Record<string, string> = {}
+  const token = getAdminToken()
+  if (token) headers['X-Admin-Token'] = token
+  const res = await fetch('/api/rescan/resume', { method: 'POST', headers })
+  if (!res.ok) await parseError(res)
+}
+
 export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaResponse> {
   const res = await fetch('/api/rescan-delta', { signal })
   if (!res.ok) await parseError(res)
