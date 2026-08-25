@@ -34,10 +34,10 @@ def test_final_mode_runs_robocopy_only_for_final_folders(tmp_path, monkeypatch):
     stats = mod.Stats()
     mod.copy_matching_folders(src, dst, "final", 4, False, stats)
     assert len(calls) == 2
-    source_dirs = {command[1] for command in calls}
-    assert any("_final" in directory for directory in source_dirs)
-    assert any("final" in directory and "_final" not in directory for directory in source_dirs)
-    assert all("manual" not in directory for directory in source_dirs)
+    source_dirs = {mod.Path(command[1]).name.casefold() for command in calls}
+    assert "_final" in source_dirs
+    assert "final" in source_dirs
+    assert "manual" not in source_dirs
     assert all("/MT:4" in command for command in calls)
     assert all(f"/MAX:{mod.MAX_COPY_SIZE_BYTES - 1}" in command for command in calls)
     assert stats.folders == 2 and stats.failed == 0

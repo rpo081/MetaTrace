@@ -76,6 +76,11 @@ def matches_mode(relative_dir: Path, mode: str) -> bool:
     return any(any(keyword in part.casefold() for keyword in keywords) for part in relative_dir.parts)
 
 
+def source_root_matches_mode(src: Path, mode: str) -> bool:
+    """Match the selected mode only against the source root's own folder name."""
+    return matches_mode(Path(src.name), mode)
+
+
 def image_masks(mode: str, path_matches: bool) -> tuple[str, ...]:
     """Return robocopy image masks for the selected folder."""
     if mode == "manual" and not path_matches:
@@ -111,7 +116,7 @@ def copy_matching_folders(
     """Run robocopy for every matching source directory containing images."""
     source_base = Path(longpath(src))
     destination_base = Path(longpath(dst))
-    source_path_matches = matches_mode(src, mode)
+    source_path_matches = source_root_matches_mode(src, mode)
     previous_folder: str | None = None
 
     for dirpath, dirnames, filenames in os.walk(source_base):

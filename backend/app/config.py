@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -50,6 +51,15 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("METATRACE_CORS_ORIGINS", "CORS_ORIGINS"),
     )
+
+    @field_validator("network_root", "admin_token", "cors_origins", mode="before")
+    @classmethod
+    def _blank_strings_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:
