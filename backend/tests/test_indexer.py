@@ -151,6 +151,31 @@ def test_initial_scan_can_use_store_snapshot_inventory(env, monkeypatch):
     assert ix.count == 1
 
 
+def test_non_initial_full_scan_can_use_store_snapshot_inventory(env, monkeypatch):
+    ix, store, s = env
+    _png(store / "a.png", (5, 5, 5))
+    ix.incremental(trigger="seed")
+    _png(store / "b.png", (6, 6, 6))
+    s.ensure_dirs()
+    snapshot = {
+        "version": 1,
+        "created_utc": "2026-08-25T00:00:00Z",
+        "root_path": str(store),
+        "file_count": 2,
+        "files": {
+            "a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size},
+            "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
+        },
+    }
+    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
+
+    rep = ix.incremental(trigger="rescan")
+    assert rep.added == 1
+    assert ix.status["inventory_source"] == "snapshot"
+
+
 def test_deleted_index_self_heals_via_full_rebuild(env, caplog):
     """Index file gone + intact DB -> loud warning, DB reset, next scan re-adds all."""
     import logging
@@ -366,11 +391,67 @@ def test_scan_can_pause_and_resume_between_files(env, monkeypatch):
     assert ix.status["state"] == "idle"
 
 
+def test_scan_can_pause_inside_large_batch(env, monkeypatch):
+    ix, store, _settings = env
+    ix.settings.batch_size = 8
+    _png(store / "a.png", (1, 0, 0))
+    _png(store / "b.png", (2, 0, 0))
+    _png(store / "c.png", (3, 0, 0))
+
+    entered_second = threading.Event()
+    release_second = threading.Event()
+    original_decode = indexer_mod.embeddings.decode_image
+    calls = {"n": 0}
+
+    def slow_decode(path):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            entered_second.set()
+            assert release_second.wait(timeout=5)
+        return original_decode(path)
+
+    monkeypatch.setattr(indexer_mod.embeddings, "decode_image", slow_decode)
+
+    result = {}
+
+    def run_scan():
+        result["report"] = ix.incremental(trigger="pause-mid-batch")
+
+    worker = threading.Thread(target=run_scan, daemon=True)
+    worker.start()
+    assert entered_second.wait(timeout=5)
+    assert ix.request_pause()
+    release_second.set()
+
+    deadline = time.time() + 5
+    while time.time() < deadline and ix.status["state"] != "paused":
+        time.sleep(0.01)
+
+    assert ix.status["state"] == "paused"
+    assert ix.resume()
+    worker.join(timeout=10)
+    assert "report" in result
+    assert result["report"].added == 3
+    assert ix.status["state"] == "idle"
+
+
 def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
     ix, store, settings = env
     _png(store / "a.png", (1, 1, 1))
     ix.incremental(trigger="seed-a")
     _png(store / "b.png", (2, 2, 2))
+    settings.ensure_dirs()
+    snapshot = {
+        "version": 1,
+        "created_utc": "2026-08-25T00:00:00Z",
+        "root_path": str(store),
+        "file_count": 2,
+        "files": {
+            "a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size},
+            "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
+        },
+    }
+    settings.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     checkpoint_path = settings.data_path / "scan_checkpoint.json"
     checkpoint_path.write_text(
@@ -402,4 +483,5 @@ def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
     assert report.added == 2
     assert resumed.count == 2
     assert decoded == ["b.png"]
+    assert resumed.status["inventory_source"] == "snapshot"
     assert not checkpoint_path.exists()

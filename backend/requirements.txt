@@ -1,11 +1,10 @@
 # Exact pins (tested set). Reproducible builds; bump deliberately.
 #
-# CPU-torch note: the --extra-index-url below is ADDITIVE to PyPI. Pinning
-# torch to an exact version makes pip compare candidates across both indexes;
-# per PEP 440 local-version ordering the cpu index's `X.Y.Z+cpu` build sorts
-# HIGHER than PyPI's plain `X.Y.Z`, so the slim CPU wheel wins on Linux
-# CUDA Torch wheels provide GPU acceleration for CLIP embeddings. The NVIDIA
-# driver must be exposed to the container (docker-compose.yml reserves a GPU).
+# CUDA-torch note: the --extra-index-url below is ADDITIVE to PyPI. Pinning
+# torch to an exact version makes pip compare candidates across indexes, and
+# the cu128 index provides the CUDA-enabled wheel used for CLIP embeddings.
+# The NVIDIA driver must be exposed to the container (docker-compose.yml
+# reserves a GPU). FAISS remains CPU in this project via faiss-cpu.
 --extra-index-url https://download.pytorch.org/whl/cu128
 fastapi==0.141.1
 uvicorn[standard]==0.52.4

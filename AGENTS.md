@@ -2,7 +2,7 @@
 
 ## What this is
 
-MetaTrace: reverse image search over ~20k local PSD/JPG/PNG renderings. FastAPI backend (`backend/app`) + React/Vite/TS frontend (`frontend/src`), SQLite metadata + FAISS flat inner-product index, open_clip ViT-B-32 QuickGELU (OpenAI weights, CPU-only). `plan.md` is the original design doc, `README.md` documents API/env vars/security posture — both current; trust them over prose elsewhere. `research.md` and `result-*.md` are one-off audit artifacts, not docs.
+MetaTrace: reverse image search over ~20k local PSD/JPG/PNG renderings. FastAPI backend (`backend/app`) + React/Vite/TS frontend (`frontend/src`), SQLite metadata + FAISS flat inner-product index, open_clip ViT-B-32 QuickGELU (OpenAI weights, CUDA-capable when Docker exposes an NVIDIA GPU; FAISS remains CPU-only). `plan.md` is the original design doc, `README.md` documents API/env vars/security posture — both current; trust them over prose elsewhere. `research.md` and `result-*.md` are one-off audit artifacts, not docs.
 
 ## Commands
 

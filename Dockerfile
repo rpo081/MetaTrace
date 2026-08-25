@@ -7,7 +7,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ---------- stage 2: python runtime (CPU-only torch) ----------
+# ---------- stage 2: python runtime (CUDA-capable torch, CPU FAISS) ----------
 FROM python:3.12-slim AS runtime
 
 # exiftool provides embedded XMP extraction; curl serves the HEALTHCHECK.

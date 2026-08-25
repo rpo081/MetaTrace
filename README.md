@@ -33,6 +33,10 @@ weights are baked into the image — no downloads at runtime.
 Keep the share in sync with a scheduled task (Windows example below), then
 trigger rescans on demand via `POST /api/rescan` (or from the web UI button).
 
+The web UI shows the current scan state (`scanning`, `paused`, `idle`), the
+latest scan report, and while a scan is active whether inventory is coming from
+the snapshot file or from a live filesystem walk.
+
 ### Platforms
 
 The image builds natively for `linux/amd64` (x64 servers, Intel Macs) and
@@ -127,19 +131,36 @@ into the image.
 | `POST /api/search?k=24&min_score=0.1` | multipart `file` upload → ranked results |
 | `GET /api/thumb/{id}?size=512` | cached PNG thumbnail (64–1024 px, alpha preserved) |
 | `GET /api/file/{id}` | original file stream |
-| `POST /api/rescan?rebuild=false` | trigger incremental scan (409 if busy) |
-| `GET /api/stats` | index/db counts, scan state/report (`seen`, `processed`, etc.), model, exiftool status |
+| `POST /api/rescan?rebuild=false&use_delta=true` | trigger scan; uses delta changes when available unless `rebuild=true` |
+| `POST /api/rescan/pause` | request pause for the running scan at the next checkpoint |
+| `POST /api/rescan/resume` | resume a paused scan, including persisted checkpoints after restart |
+| `GET /api/stats` | index/db counts, scan state/report (`seen`, `processed`, etc.), `inventory_source`, model, exiftool status |
+| `GET /api/rescan-delta` | show the latest prepared delta summary, if present |
 | `GET /api/health` | liveness |
 
 Search response: `score` = cosine similarity (exact sha256 hits are pinned to
 rank 1 with score 1.0 and `"exact": true`), plus `rel_path`, `original_path`,
 `width`, `height`, full `xmp` tag dict, thumbnail/file URLs.
 
+### Rescan behavior
+
+- Default rescans are non-destructive incremental scans.
+- If `use_delta=true` and `data/rescan_delta_latest.json` exists, only created,
+  modified, and deleted files are processed.
+- A full scan from the UI or `POST /api/rescan?rebuild=false&use_delta=false`
+  re-inventories the whole store but does not wipe the database first.
+- `rebuild=true` is the destructive mode: it resets DB and index, then rebuilds
+  embeddings from scratch.
+- `POST /api/rescan/pause` pauses cooperatively at the next checkpoint; resume
+  continues in-process or from the persisted checkpoint after a restart.
+- During active scans the UI polls stats more frequently, exposes Pause/Resume,
+  and shows `inventory_source` as `snapshot` or `walk`.
+
 ### Mutating endpoints & admin token
 
-By default MetaTrace assumes a **trusted LAN**: `POST /api/rescan` is open and
-a one-time warning is logged at startup. Set `METATRACE_ADMIN_TOKEN` to lock
-mutating endpoints down — requests must then send
+By default MetaTrace assumes a **trusted LAN**: mutating rescan endpoints are open
+and a one-time warning is logged at startup. Set `METATRACE_ADMIN_TOKEN` to lock
+them down — requests must then send
 `X-Admin-Token: <METATRACE_ADMIN_TOKEN>` or receive `403 Forbidden`.
 Admin UI: from the browser console run `localStorage.setItem('metatrace_admin_token', '<token>')` once and the UI's rescan button sends it as `X-Admin-Token` automatically.
 
@@ -170,14 +191,15 @@ Environment variables (or `.env`, see `.env.example`):
 | `MODEL_NAME` | `ViT-B-32-quickgelu` | open_clip architecture |
 | `MODEL_PRETRAINED` | `openai` | weight source |
 | `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; see macOS note in implementation notes |
-| `BATCH_SIZE` | `128` | embedding batch size |
+| `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |
+| `USE_STORE_SNAPSHOT_FOR_INITIAL_SCAN` | `true` | prefer `data/store_snapshot_latest.json` over a filesystem walk when building scan inventory |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `24` / `200` | result count limits |
 | `MIN_SCORE_DEFAULT` | `0.0` | default cosine cutoff |
 | `THUMB_SIZE` | `512` | default thumbnail max side |
 | `MAX_UPLOAD_MB` | `64` | query upload limit (streamed, early-abort) |
 | `ALLOWED_EXTENSIONS` | `.psd,.jpg,.jpeg,.png,.tif,.tiff` | indexed formats |
-| `METATRACE_ADMIN_TOKEN` | — | require `X-Admin-Token` on `POST /api/rescan`; empty = trusted-LAN mode |
+| `METATRACE_ADMIN_TOKEN` | — | require `X-Admin-Token` on mutating rescan endpoints; empty = trusted-LAN mode |
 | `METATRACE_CORS_ORIGINS` | — | comma-separated CORS origins; empty = no CORS (same-origin SPA) |
 
 ## Performance notes
@@ -186,9 +208,12 @@ Environment variables (or `.env`, see `.env.example`):
 - Embedding can use CUDA (`DEVICE=auto`) when NVIDIA GPU passthrough is enabled.
 - Rescan time is often dominated by filesystem inventory/stat calls on large
   bind mounts; GPU helps embedding work, not full-tree metadata walks.
-- For large first-time builds, `scripts/store_snapshot.py` also writes
-  `data/store_snapshot_latest.json`; when the index/DB are empty, the backend
-  can use that snapshot as the initial inventory to skip the first full walk.
+- `scripts/store_snapshot.py` also writes `data/store_snapshot_latest.json`;
+  full scans prefer that snapshot inventory when available, including restart
+  resume paths, to avoid unnecessary filesystem walks.
+- `BATCH_SIZE` trades throughput against responsiveness: larger batches reduce
+  embedding overhead but increase RAM use, pause latency, and redo work after
+  an unclean stop inside a batch.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
 - Thumbnails are generated once per `(id, size)` and served from disk cache.
 

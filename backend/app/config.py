@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     model_pretrained: str = "openai"
     # auto = cuda > mps > cpu. Use "cpu" on macOS: faiss + MPS segfault.
     device: str = "auto"
-    batch_size: int = 128
+    batch_size: int = 64
 
     run_initial_scan_on_start: bool = True
     use_store_snapshot_for_initial_scan: bool = True

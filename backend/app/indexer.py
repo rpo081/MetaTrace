@@ -251,10 +251,11 @@ class Indexer:
                 self.status["last_report"] = current.as_dict()
 
             working = self._clone_published_index()
-            pending = self._disk_files_for_rel_paths(
-                checkpoint.get("remaining_rel_paths", []),
-                report,
-            )
+            remaining_rel_paths = checkpoint.get("remaining_rel_paths", [])
+            pending = self._disk_files_from_snapshot(remaining_rel_paths, report)
+            if pending is None:
+                self._set_inventory_source("walk")
+                pending = self._disk_files_for_rel_paths(remaining_rel_paths, report)
             pending_added = set(checkpoint.get("remaining_added_rel_paths", []))
             known = db.list_entries(self.settings.db_path)
             try:
@@ -468,6 +469,18 @@ class Indexer:
             )
         return pending
 
+    def _disk_files_from_snapshot(self, rel_paths: list[str], report: ScanReport) -> list[DiskFile] | None:
+        snapshot = self._load_snapshot_inventory()
+        if snapshot is None:
+            return None
+        pending: list[DiskFile] = []
+        for rel_path in rel_paths:
+            disk_file = snapshot.get(rel_path.replace("\\", "/"))
+            if disk_file is None:
+                return None
+            pending.append(disk_file)
+        return pending
+
     def _run_pending_batches(
         self,
         *,
@@ -483,6 +496,7 @@ class Indexer:
         batch = max(1, self.settings.batch_size)
         for i in range(0, len(pending), batch):
             remaining = pending[i:]
+            remainder = pending[i + batch :]
             self._wait_if_paused(
                 report,
                 progress,
@@ -502,6 +516,9 @@ class Indexer:
                 known,
                 report,
                 working,
+                mode,
+                force_rebuild,
+                remainder,
                 progress,
             )
             if progress:
@@ -575,7 +592,7 @@ class Indexer:
                 found[rel] = DiskFile(rel, ap, st.st_size, st.st_mtime)
         return found
 
-    def _load_initial_snapshot_inventory(self) -> dict[str, DiskFile] | None:
+    def _load_snapshot_inventory(self) -> dict[str, DiskFile] | None:
         if not self.settings.use_store_snapshot_for_initial_scan:
             return None
         path = self.settings.store_snapshot_file
@@ -606,7 +623,7 @@ class Indexer:
         if not disk:
             log.warning("store snapshot %s contained no usable image entries", path.name)
             return None
-        log.info("using store snapshot %s for initial inventory (%d files)", path.name, len(disk))
+        log.info("using store snapshot %s for inventory (%d files)", path.name, len(disk))
         self._set_inventory_source("snapshot")
         return disk
 
@@ -614,9 +631,7 @@ class Indexer:
         s = self.settings
         db.init_db(s.db_path)
         known = db.list_entries(s.db_path)
-        disk = None
-        if not force_rebuild and self.index is None and not known:
-            disk = self._load_initial_snapshot_inventory()
+        disk = self._load_snapshot_inventory()
         if disk is None:
             self._set_inventory_source("walk")
             disk = self._walk_store(
@@ -814,6 +829,9 @@ class Indexer:
         known: dict[str, object],
         report: ScanReport,
         index,
+        mode: str,
+        force_rebuild: bool,
+        remainder: list[DiskFile],
         progress=None,
     ):
         """Embed one chunk into ``index`` (created on first use) and return it."""
@@ -824,7 +842,20 @@ class Indexer:
         ok_files: list[DiskFile] = []
         shas: dict[str, str] = {}
         dims: dict[str, tuple[int, int]] = {}
-        for f in chunk:
+        for offset, f in enumerate(chunk):
+            remaining = chunk[offset:] + remainder
+            self._wait_if_paused(
+                report,
+                progress,
+                snapshot=lambda remaining=remaining, index=index: self._snapshot_pause_state(
+                    report,
+                    index,
+                    mode,
+                    force_rebuild,
+                    remaining,
+                    added_set,
+                ),
+            )
             try:
                 img = embeddings.decode_image(f.abs_path)
                 images.append(img)

@@ -1,7 +1,7 @@
 import os
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 SNAPSHOT_FILE = "ssd_snapshot.json"
@@ -68,7 +68,7 @@ def scan_drive(root_path):
 def build_snapshot_payload(root_path, file_state):
     return {
         "version": 1,
-        "created_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "created_utc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "root_path": os.path.abspath(root_path),
         "file_count": len(file_state),
         "files": file_state,
