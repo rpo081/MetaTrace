@@ -7,6 +7,8 @@ import logging
 import os
 import threading
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -113,6 +115,13 @@ class Indexer:
         self._resume_checkpoint: dict | None = None
         self.index = None  # faiss.IndexIDMap2, created lazily on first batch
         self.status: dict = {"state": "idle", "last_report": None, "inventory_source": None}
+        # Worker threads spawn lazily on first submit; scans are serialized by
+        # _scan_lock, so the pools never run concurrently.
+        self._decode_pool = ThreadPoolExecutor(
+            max_workers=max(1, settings.decode_workers),
+            thread_name_prefix="metatrace-decode",
+        )
+        self._xmp_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="metatrace-xmp")
 
     # ------------------------------------------------------------------ api
     @property
@@ -822,6 +831,10 @@ class Indexer:
             report.added, report.updated, report.failed, report.duration_sec or 0.0,
         )
 
+    def _decode_and_hash(self, f: DiskFile):
+        img = embeddings.decode_image(f.abs_path)
+        return f, img, sha256_file(f.abs_path)
+
     def _process_chunk(
         self,
         chunk: list[DiskFile],
@@ -834,7 +847,13 @@ class Indexer:
         remainder: list[DiskFile],
         progress=None,
     ):
-        """Embed one chunk into ``index`` (created on first use) and return it."""
+        """Embed one chunk into ``index`` (created on first use) and return it.
+
+        Decode+hash run on a thread pool behind a bounded in-flight window
+        (memory guard); XMP extraction overlaps the embedding step as a
+        background future. Pause checkpoints stay per-file on the consuming
+        side, so snapshots/resume behave exactly like the serial version.
+        """
         import faiss
 
         s = self.settings
@@ -842,7 +861,24 @@ class Indexer:
         ok_files: list[DiskFile] = []
         shas: dict[str, str] = {}
         dims: dict[str, tuple[int, int]] = {}
-        for offset, f in enumerate(chunk):
+
+        window = max(1, s.decode_prefetch)
+        inflight: deque[tuple[int, Future]] = deque()
+        next_offset = 0
+
+        def submit_next() -> None:
+            nonlocal next_offset
+            if next_offset < len(chunk):
+                fut = self._decode_pool.submit(self._decode_and_hash, chunk[next_offset])
+                inflight.append((next_offset, fut))
+                next_offset += 1
+
+        for _ in range(min(window, len(chunk))):
+            submit_next()
+
+        while inflight:
+            offset, fut = inflight.popleft()
+            f = chunk[offset]
             remaining = chunk[offset:] + remainder
             self._wait_if_paused(
                 report,
@@ -857,11 +893,11 @@ class Indexer:
                 ),
             )
             try:
-                img = embeddings.decode_image(f.abs_path)
+                done_file, img, sha = fut.result()
                 images.append(img)
-                ok_files.append(f)
-                shas[f.rel_path] = sha256_file(f.abs_path)
-                dims[f.rel_path] = img.size  # (width, height)
+                ok_files.append(done_file)
+                shas[done_file.rel_path] = sha
+                dims[done_file.rel_path] = img.size  # (width, height)
             except Exception as exc:  # noqa: BLE001 - one bad file must not kill the scan
                 report.failed += 1
                 report.errors.append(f"{f.rel_path}: {exc}")
@@ -870,10 +906,13 @@ class Indexer:
                 report.processed += 1
                 if progress:
                     progress(report)
+            submit_next()
         if not images:
             return index
 
-        xmp_map = metadata.extract_xmp([f.abs_path for f in ok_files])
+        xmp_future = self._xmp_pool.submit(
+            metadata.extract_xmp, [f.abs_path for f in ok_files]
+        )
 
         try:
             vectors = embeddings.embed_images(images, s)
@@ -882,6 +921,8 @@ class Indexer:
             report.errors.append(f"embed batch failed: {exc}")
             log.exception("embed batch failed")
             return index
+
+        xmp_map = xmp_future.result()
 
         update_ids = [
             known[f.rel_path].id
@@ -896,26 +937,28 @@ class Indexer:
             log.info("creating flat IP index (dim=%d)", dim)
             index = faiss.IndexIDMap2(faiss.IndexFlatIP(dim))
 
-        ids = []
+        rows = []
         n_added = n_updated = 0
         for f, _vec in zip(ok_files, vectors):
             width, height = dims[f.rel_path]
-            row_id = db.upsert_image(
-                s.db_path,
-                rel_path=f.rel_path,
-                original_path=s.original_path_for(f.rel_path),
-                size=f.size,
-                mtime=f.mtime,
-                sha256=shas[f.rel_path],
-                width=width,
-                height=height,
-                xmp=xmp_map.get(str(f.abs_path), {}),
+            rows.append(
+                {
+                    "rel_path": f.rel_path,
+                    "original_path": s.original_path_for(f.rel_path),
+                    "size": f.size,
+                    "mtime": f.mtime,
+                    "sha256": shas[f.rel_path],
+                    "width": width,
+                    "height": height,
+                    "xmp": xmp_map.get(str(f.abs_path), {}),
+                }
             )
-            ids.append(row_id)
             if f.rel_path in added_set:
                 n_added += 1
             else:
                 n_updated += 1
+        id_by_rel = db.upsert_images_bulk(s.db_path, rows)
+        ids = [id_by_rel[r["rel_path"]] for r in rows]
         index.add_with_ids(
             vectors.astype("float32"), np.array(ids, dtype="int64")
         )

@@ -71,6 +71,9 @@ def get_model(settings):
             # is the workaround; see README.
             device = select_device(getattr(settings, "device", "auto"), torch)
             log.info("loading CLIP model %s (%s) on %s", *key, device)
+            if device == "cuda":
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
             model, _, preprocess = open_clip.create_model_and_transforms(
                 settings.model_name,
                 pretrained=settings.model_pretrained,
@@ -133,7 +136,13 @@ def embed_images(images: list[PILImage], settings) -> np.ndarray:
     model, preprocess, device = get_model(settings)
     tensors = torch.stack([preprocess(img) for img in images]).to(device)
     with torch.inference_mode():
-        features = model.encode_image(tensors).float().cpu().numpy()
+        if device == "cuda":
+            with torch.autocast("cuda", dtype=torch.float16):
+                features = model.encode_image(tensors)
+            features = features.float()
+        else:
+            features = model.encode_image(tensors)
+        features = features.cpu().numpy()
     norms = np.linalg.norm(features, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return (features / norms).astype(np.float32)

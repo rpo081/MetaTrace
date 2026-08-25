@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     model_pretrained: str = "openai"
     # auto = cuda > mps > cpu. Use "cpu" on macOS: faiss + MPS segfault.
     device: str = "auto"
-    batch_size: int = 64
+    batch_size: int = 256
+    # Scan-time decode parallelism: decode+hash workers and the max number of
+    # fully decoded images held in memory at once (bounded window).
+    decode_workers: int = 4
+    decode_prefetch: int = 16
 
     run_initial_scan_on_start: bool = True
     use_store_snapshot_for_initial_scan: bool = True

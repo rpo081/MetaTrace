@@ -98,6 +98,61 @@ def upsert_image(
     return int(row["id"])
 
 
+_ID_FETCH_SLICE = 500  # stay well under SQLite's bound-parameter limit
+
+
+def upsert_images_bulk(db_path: Path, rows: Sequence[dict]) -> dict[str, int]:
+    """Upsert many image rows in one connection/transaction.
+
+    Semantically equivalent to calling ``upsert_image`` per row (same conflict
+    update incl. indexed_at refresh), minus the per-file connect/commit/select
+    overhead. Returns {rel_path: id} for every input row.
+    """
+    if not rows:
+        return {}
+    rel_paths = [r["rel_path"] for r in rows]
+    id_by_rel: dict[str, int] = {}
+    with closing(connect(db_path)) as conn, conn:
+        for r in rows:
+            conn.execute(
+                """
+                INSERT INTO images (rel_path, original_path, size, mtime, sha256, width, height, xmp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(rel_path) DO UPDATE SET
+                    original_path=excluded.original_path,
+                    size=excluded.size,
+                    mtime=excluded.mtime,
+                    sha256=excluded.sha256,
+                    width=excluded.width,
+                    height=excluded.height,
+                    xmp=excluded.xmp,
+                    indexed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                """,
+                (
+                    r["rel_path"],
+                    r["original_path"],
+                    r["size"],
+                    r["mtime"],
+                    r.get("sha256"),
+                    r.get("width"),
+                    r.get("height"),
+                    json.dumps(r.get("xmp") or {}, ensure_ascii=False),
+                ),
+            )
+        for i in range(0, len(rel_paths), _ID_FETCH_SLICE):
+            slice_ = rel_paths[i : i + _ID_FETCH_SLICE]
+            placeholders = ",".join("?" * len(slice_))
+            fetched = conn.execute(
+                f"SELECT id, rel_path FROM images WHERE rel_path IN ({placeholders})",
+                tuple(slice_),
+            ).fetchall()
+            for row in fetched:
+                id_by_rel[row["rel_path"]] = int(row["id"])
+    missing = [rp for rp in rel_paths if rp not in id_by_rel]
+    assert not missing, f"bulk upsert lost ids for {len(missing)} row(s), e.g. {missing[:3]}"
+    return id_by_rel
+
+
 def remove_ids(db_path: Path, ids: Sequence[int]) -> None:
     if not ids:
         return

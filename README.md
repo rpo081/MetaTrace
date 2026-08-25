@@ -191,7 +191,9 @@ Environment variables (or `.env`, see `.env.example`):
 | `MODEL_NAME` | `ViT-B-32-quickgelu` | open_clip architecture |
 | `MODEL_PRETRAINED` | `openai` | weight source |
 | `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; see macOS note in implementation notes |
-| `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency |
+| `BATCH_SIZE` | `256` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency |
+| `DECODE_WORKERS` | `4` | scan-time threads for image decode + sha256 (PIL/psd-tools) |
+| `DECODE_PREFETCH` | `16` | max fully decoded images held in memory during a scan chunk (bounded window) |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |
 | `USE_STORE_SNAPSHOT_FOR_INITIAL_SCAN` | `true` | prefer `data/store_snapshot_latest.json` over a filesystem walk when building scan inventory |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `24` / `200` | result count limits |
@@ -214,6 +216,11 @@ Environment variables (or `.env`, see `.env.example`):
 - `BATCH_SIZE` trades throughput against responsiveness: larger batches reduce
   embedding overhead but increase RAM use, pause latency, and redo work after
   an unclean stop inside a batch.
+- Scans pipeline their stages: decode+hash run on `DECODE_WORKERS` threads with
+  at most `DECODE_PREFETCH` decoded images in memory, and XMP extraction
+  (exiftool subprocess) overlaps the GPU/CPU embedding step. DB writes are
+  batched into one transaction per chunk. On CUDA, embedding runs in fp16
+  autocast (float32 output) with TF32 matmuls enabled.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
 - Thumbnails are generated once per `(id, size)` and served from disk cache.
 
