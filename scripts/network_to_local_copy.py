@@ -15,6 +15,7 @@ IS_WINDOWS = os.name == "nt"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(BASE_DIR, "snapshots")
 DIFF_DIR = os.path.join(SNAPSHOT_DIR, "diffs")
+ROBOCOPY_LOG_DIR = os.path.join(SNAPSHOT_DIR, "logs")
 EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
 EXCLUDED_SCAN_PATHS = set()
 EXCLUDED_DIR_NAMES = {
@@ -192,6 +193,23 @@ def filter_images(paths, all_paths, root):
     ]
 
 
+def filter_existing_target_files(paths, source_root, target_root, source_snapshot):
+    """Drop files that already exist in the target with the same size."""
+    if not os.path.isdir(longpath(target_root)):
+        return list(paths), 0
+    target_snapshot = build_snapshot([target_root])
+    target_sizes = {
+        os.path.relpath(path, target_root).casefold(): metadata[1]
+        for path, metadata in target_snapshot.items()
+    }
+    filtered = [
+        path for path in paths
+        if target_sizes.get(os.path.relpath(path, source_root).casefold())
+        != source_snapshot[path][1]
+    ]
+    return filtered, len(paths) - len(filtered)
+
+
 def robocopy_path(path):
     """Return a normal path because robocopy rejects extended-length paths."""
     value = os.fspath(path)
@@ -216,6 +234,11 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
     def copy_directory(source_directory, filenames):
         relative_directory = os.path.relpath(source_directory, source_root)
         target_directory = os.path.join(target_root, relative_directory)
+        log_name = hashlib.blake2s(
+            source_directory.casefold().encode("utf-8"), digest_size=8
+        ).hexdigest()
+        log_path = os.path.join(ROBOCOPY_LOG_DIR, f"robocopy_{log_name}.log")
+        os.makedirs(ROBOCOPY_LOG_DIR, exist_ok=True)
         command = [
             "robocopy",
             robocopy_path(source_directory),
@@ -234,17 +257,17 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
             "/NDL",
             "/NJH",
             "/NJS",
+            "/TEE",
+            f"/LOG:{log_path}",
         ]
         result = subprocess.run(
             command,
             check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
         if result.returncode >= 8:
             raise RuntimeError(
                 f"robocopy fehlgeschlagen für {source_directory} "
-                f"(Exit-Code {result.returncode})"
+                f"(Exit-Code {result.returncode}); Log: {log_path}"
             )
 
     file_count = sum(len(filenames) for filenames in paths_by_directory.values())
@@ -333,6 +356,10 @@ def run(source_root, target_root):
         if os.path.splitext(os.path.basename(path))[1].lower() in EXTENSIONS
     ]
     copy_paths = filter_images(image_paths, all_image_paths, source_root)
+    copy_paths, existing_count = filter_existing_target_files(
+        copy_paths, source_root, target_root, new
+    )
+    print(f"{existing_count} Dateien wegen vorhandenem Zielbestand ausgeschlossen.")
     copy_bytes = sum(changed[path][1] for path in copy_paths)
     print(f"{len(image_paths) - len(copy_paths)} von {len(image_paths)} Bildern durch "
           f"Ordner- und Sequenzfilter ausgeschlossen.")
