@@ -13,7 +13,7 @@ services:
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
       # Scan throughput tuning — runtime-tunable via .env, no rebuild needed
       # (`docker compose up -d` recreates the container).
-      BATCH_SIZE: ${BATCH_SIZE:-512}
+      BATCH_SIZE: ${BATCH_SIZE:-256}
       DECODE_WORKERS: ${DECODE_WORKERS:-32}
       DECODE_PREFETCH: ${DECODE_PREFETCH:-64}
       # PSD composite pixel cap (OOM guard for huge renders).
