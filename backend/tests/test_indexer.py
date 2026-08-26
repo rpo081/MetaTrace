@@ -229,17 +229,20 @@ def test_corrupt_index_quarantined_and_rebuilt(env, tmp_path, caplog):
     assert s.index_file.exists()
 
 
-def test_count_mismatch_forces_rebuild(env, monkeypatch):
-    """ntotal != db rows (crash between upsert and add_with_ids) -> rebuild."""
+def test_db_ahead_divergence_is_repaired_surgically(env):
+    """DB rows whose vector never made it into the index (crash between
+    upsert and add_with_ids) get pruned; everything else survives. A restart
+    must NOT wipe the whole index (that caused the rescan-from-zero loop)."""
     from backend.app import db
 
     ix, store, s = env
     _png(store / "a.png", (4, 4, 4))
     ix.incremental(trigger="t")
+    original_id = db.list_entries(s.db_path)["a.png"].id
     assert ix.count == 1
 
     # Simulate divergence: a DB row whose vector never made it into the index.
-    row_id = db.upsert_image(
+    db.upsert_image(
         s.db_path,
         rel_path="ghost.png",
         original_path="ghost.png",
@@ -252,11 +255,143 @@ def test_count_mismatch_forces_rebuild(env, monkeypatch):
     )
     assert db.count(s.db_path) == 2 and ix.count == 1
 
-    ix.load_or_create()  # detects mismatch, resets DB + index
-    assert ix.count == 0 and db.count(s.db_path) == 0
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
 
-    rep = ix.incremental(trigger="heal")
-    assert rep.added == 1 and ix.count == 1
+    # Surgical repair: ghost row gone, real data untouched (same id => no wipe).
+    assert db.count(s.db_path) == 1
+    assert db.list_entries(s.db_path)["a.png"].id == original_id
+    assert ix2.count == 1
+    assert s.index_file.exists()
+
+    rep = ix2.incremental(trigger="heal")
+    assert rep.added == 0 and rep.failed == 0
+
+
+def test_orphan_vectors_are_removed_on_boot(env):
+    """Vector ids without a DB row are dropped at startup (legacy/corrupt
+    states); search can never return ids the DB cannot resolve."""
+    import faiss
+
+    from backend.app import db
+
+    ix, store, s = env
+    _png(store / "a.png", (7, 7, 7))
+    ix.incremental(trigger="t")
+    assert ix.count == 1
+
+    # Remove the DB row behind the published index's back.
+    db.remove_ids(s.db_path, [db.list_entries(s.db_path)["a.png"].id])
+
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+    assert ix2.count == 0
+    assert db.count(s.db_path) == 0
+    assert int(faiss.vector_to_array(ix2.index.id_map).size) == 0
+
+
+def test_id_sets_diverged_with_equal_counts_still_repaired(env):
+    """Equal counts but different ids (e.g. re-created DB rows) must not pass
+    a pure count compare — the sets themselves have to match."""
+    from backend.app import db
+
+    ix, store, s = env
+    _png(store / "a.png", (8, 8, 8))
+    ix.incremental(trigger="t")
+    old_id = db.list_entries(s.db_path)["a.png"].id
+
+    # Recreate the row: AUTOINCREMENT assigns a different id, count stays 1.
+    conn = __import__("sqlite3").connect(s.db_path)
+    with conn:
+        conn.execute("DELETE FROM images")
+    conn.close()
+    db.upsert_image(
+        s.db_path,
+        rel_path="a.png",
+        original_path="a.png",
+        size=(store / "a.png").stat().st_size,
+        mtime=(store / "a.png").stat().st_mtime,
+        sha256=None,
+        width=8,
+        height=8,
+        xmp={},
+    )
+    new_id = db.list_entries(s.db_path)["a.png"].id
+    assert new_id != old_id
+
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+    # Old vector id removed; row pruned too (its id has no vector) -> empty,
+    # and the next scan re-embeds the file cleanly.
+    assert ix2.count == 0 and db.count(s.db_path) == 0
+    rep = ix2.incremental(trigger="heal")
+    assert rep.added == 1 and ix2.count == 1
+
+
+def test_interrupted_scan_loses_at_most_one_chunk(env, monkeypatch):
+    """A scan killed mid-run must not doom the next startup to a full rebuild:
+    periodic publishes keep the persisted index near the per-chunk DB commits,
+    startup repairs the remainder surgically."""
+    ix, store, s = env
+    monkeypatch.setattr(indexer_mod, "PUBLISH_INTERVAL_SEC", 0.0)
+    ix.settings.batch_size = 1  # one file per chunk so the crash lands between files
+    _png(store / "a.png", (1, 0, 0))
+    ix.incremental(trigger="seed")
+    from backend.app import db
+
+    seed_id = db.list_entries(s.db_path)["a.png"].id
+
+    _png(store / "b.png", (2, 0, 0))
+    _png(store / "c.png", (3, 0, 0))
+
+    original_process = ix._process_chunk
+    calls = {"n": 0}
+
+    def crashing_process(*args, **kwargs):
+        result = original_process(*args, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash after first chunk")
+        return result
+
+    monkeypatch.setattr(ix, "_process_chunk", crashing_process)
+    with pytest.raises(RuntimeError):
+        ix.incremental(trigger="doomed")
+
+    # Restart with a fresh instance, exactly like a container restart.
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+    # b.png was fully committed+published before the crash -> survives.
+    assert ix2.count == 2
+    assert {"a.png", "b.png"} == set(db.list_entries(s.db_path))
+    assert db.list_entries(s.db_path)["a.png"].id == seed_id
+
+    rep = ix2.incremental(trigger="continue")
+    assert rep.added == 1            # only c.png left to embed
+    assert ix2.count == 3
+
+
+def test_long_scan_publishes_progress_periodically(env, monkeypatch):
+    ix, store, s = env
+    monkeypatch.setattr(indexer_mod, "PUBLISH_INTERVAL_SEC", 0.0)
+    for n in range(3):
+        _png(store / f"p{n}.png", (n, 0, 0))
+
+    published = []
+    original_publish = ix._publish_index
+
+    def spying_publish(index):
+        published.append(int(index.ntotal) if index is not None else 0)
+        return original_publish(index)
+
+    monkeypatch.setattr(ix, "_publish_index", spying_publish)
+    ix.incremental(trigger="progressive")
+
+    # First chunk publishes immediately (throttle starts at -inf), final
+    # publish closes the scan; nothing in between may skip publishing here
+    # because every chunk is due again at interval=0.
+    assert len(published) >= 2
+    assert published[-1] == 3
 
 
 def test_scan_never_mutates_published_index(env):

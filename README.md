@@ -250,8 +250,12 @@ Environment variables (or `.env`, see `.env.example`):
   capped at 120 s, bounding the worst case per 128-file batch (~4 h including
   per-file retries) instead of hanging a scan indefinitely.
 - **Self-healing index**: on startup the FAISS index is reconciled against the
-  DB (`ntotal` vs row count). A missing or corrupt index file (quarantined as
-  `index.faiss.corrupt`) or any count mismatch forces a loud full rebuild so
-  search results never silently go empty.
+  DB by comparing vector-id and row-id *sets*. Orphan vectors (no DB row) are
+  removed; rows without a vector are pruned so the next scan re-embeds exactly
+  those files. A missing or corrupt index file (quarantined as
+  `index.faiss.corrupt`) still forces a full rebuild. Long scans publish their
+  working index periodically (`PUBLISH_INTERVAL_SEC`, 30 s), so an interrupted
+  container loses at most ~one interval of work instead of the whole scan —
+  restarts never trigger a rescan-from-zero loop.
 - **Exact match** means byte-identical (sha256). Resized variants rank high via
   cosine similarity but are not guaranteed pixel-identical.

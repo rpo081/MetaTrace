@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 # Files whose (size, mtime) differ by less than this are treated as unchanged.
 MTIME_TOLERANCE_SEC = 2.0
 SCAN_CHECKPOINT_VERSION = 1
+# Publish (swap + persist) a long-running scan's working index at least this
+# often, so a crash costs at most ~interval worth of work instead of losing
+# the whole scan (the DB commits per chunk; without periodic publishes any
+# interruption left the DB permanently ahead of the published index).
+PUBLISH_INTERVAL_SEC = 30.0
 
 
 def _quarantine_corrupt_index(index_file: Path) -> Path:
@@ -115,6 +120,8 @@ class Indexer:
         self._resume_checkpoint: dict | None = None
         self.index = None  # faiss.IndexIDMap2, created lazily on first batch
         self.status: dict = {"state": "idle", "last_report": None, "inventory_source": None}
+        # Progress-publish throttle for long scans (see _publish_progress).
+        self._last_publish_monotonic = float("-inf")
         # Worker threads spawn lazily on first submit; scans are serialized by
         # _scan_lock, so the pools never run concurrently.
         self._decode_pool = ThreadPoolExecutor(
@@ -135,10 +142,12 @@ class Indexer:
     def load_or_create(self) -> None:
         """Load the persisted index, reconciling it against the database.
 
-        Self-heal: a missing or corrupt index file, or an ntotal/DB-row-count
-        mismatch, forces a full rebuild on the next scan (DB is reset so every
-        store file is re-embedded). A corrupt file is quarantined as
-        ``index.faiss.corrupt`` instead of crashing startup.
+        Self-heal: a missing or corrupt index file is quarantined as
+        ``index.faiss.corrupt`` and forces a full rebuild (no vectors exist to
+        repair). A readable index is *repaired surgically*: vector ids that
+        have no DB row are removed, DB rows that have no vector are pruned so
+        the next scan re-embeds exactly those files — an interrupted scan
+        costs at most its last chunk, never a full rebuild.
         """
         import faiss
 
@@ -555,7 +564,12 @@ class Indexer:
         remaining: list[DiskFile],
         added_rel_paths: set[str],
     ) -> None:
-        self._publish_index(working)
+        import faiss
+
+        # Publish a COPY of the working index: callers keep mutating ``working``
+        # after resume, and a published index object must never be mutated
+        # again (lock-free search readers may hold it; FAISS releases the GIL).
+        self._publish_index(faiss.clone_index(working) if working is not None else None)
         self._save_pending_checkpoint(
             mode,
             force_rebuild,
@@ -563,6 +577,22 @@ class Indexer:
             [f.rel_path for f in remaining],
             added_rel_paths,
         )
+
+    def _publish_progress(self, index) -> None:
+        """Swap+persist the working index during long scans (throttled).
+
+        Keeps the on-disk/published state close to the per-chunk DB commits so
+        an interrupted scan loses at most ~PUBLISH_INTERVAL_SEC of work instead
+        of forcing a full redo. A copy is published; the caller's object stays
+        private and mutable.
+        """
+        import faiss
+
+        now = time.monotonic()
+        if now - self._last_publish_monotonic < PUBLISH_INTERVAL_SEC:
+            return
+        self._last_publish_monotonic = now
+        self._publish_index(faiss.clone_index(index))
 
     def _force_full_rebuild(self, reason: str) -> None:
         """Reset DB + in-memory index so the next scan re-embeds everything."""
@@ -572,22 +602,46 @@ class Indexer:
             self.index = None
 
     def _reconcile_counts(self) -> None:
-        """Compare FAISS ntotal vs DB row count; force rebuild on mismatch.
+        """Make the FAISS id set and the DB id set match at startup.
 
-        Catches vectors lost to crashes between the DB upsert and add_with_ids
-        (or any other divergence window) before they become silent search holes.
+        Replaces the old count-compare + full-rebuild behavior: an interrupted
+        scan commits DB rows per chunk but used to publish the index only at
+        the end, so *any* interruption permanently diverged DB and index and
+        every restart wiped everything (rescan-from-zero loop). Repair instead:
+
+        - orphan vectors (id without DB row): remove_ids from the index
+        - hole rows (DB row without vector): delete row; the next incremental
+          scan re-embeds exactly those files as additions
+
+        Both directions keep search honest (no silent holes); a crash now
+        costs at most one chunk of work. Runs before the server starts serving,
+        so mutating self.index in place is safe here.
         """
+        import faiss
+
         s = self.settings
         assert self.index is not None
-        ntotal = int(self.index.ntotal)
-        n_db = db.count(s.db_path)
-        if ntotal != n_db:
-            log.warning(
-                "index/DB mismatch detected: faiss.ntotal=%d but db rows=%d; "
-                "forcing full rebuild to restore parity",
-                ntotal, n_db,
-            )
-            self._force_full_rebuild("index/DB count mismatch")
+        entries = db.list_entries(s.db_path)
+        db_ids = {e.id for e in entries.values()}
+        index_ids = {int(i) for i in faiss.vector_to_array(self.index.id_map)}
+        orphans = sorted(index_ids - db_ids)
+        holes = sorted(db_ids - index_ids)
+        if not orphans and not holes:
+            return
+        log.warning(
+            "index/DB divergence: %d orphan vector(s), %d row(s) without vector; "
+            "repairing surgically",
+            len(orphans), len(holes),
+        )
+        if orphans:
+            self.index.remove_ids(np.array(orphans, dtype="int64"))
+        if holes:
+            db.remove_ids(s.db_path, holes)
+        self._publish_index(self.index)
+        log.info(
+            "index/DB repair done: faiss.ntotal=%d, db rows=%d",
+            int(self.index.ntotal), db.count(s.db_path),
+        )
 
     def _walk_store(self, pause=None) -> dict[str, DiskFile]:
         found: dict[str, DiskFile] = {}
@@ -976,6 +1030,7 @@ class Indexer:
         )
         report.added += n_added
         report.updated += n_updated
+        self._publish_progress(index)
         return index
 
 
