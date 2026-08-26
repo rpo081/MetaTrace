@@ -1,5 +1,6 @@
 """API tests with a temp store; no CLIP model needed for these endpoints."""
 import io
+import json
 
 import numpy as np
 import pytest
@@ -61,11 +62,24 @@ def test_metatrace_env_vars_map_to_settings(monkeypatch):
 
 def test_stats_sanitized_and_parity(client):
     """No absolute paths leak; db_count/max_upload_mb exposed for parity."""
+    client.app.state.settings.store_snapshot_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "files": {
+                    "x.png": {"mtime": 1.0, "size": 1},
+                    "y.jpg": {"mtime": 1.0, "size": 1},
+                    "notes.txt": {"mtime": 1.0, "size": 1},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     r = client.get("/api/stats")
     body = r.json()
     assert r.status_code == 200
     for key in ("indexed", "db_count", "state", "last_report", "last_scan",
-                "model", "exiftool", "max_upload_mb"):
+                "model", "exiftool", "max_upload_mb", "snapshot_image_count"):
         assert key in body
     # sanitized: no store/network topology disclosure
     assert "store_path" not in body
@@ -73,6 +87,7 @@ def test_stats_sanitized_and_parity(client):
     assert str(client.app.state.settings.store_path) not in r.text
     # parity observability
     assert body["indexed"] == body["db_count"] == 1
+    assert body["snapshot_image_count"] == 2
     assert body["max_upload_mb"] == client.app.state.settings.max_upload_mb
     assert body["inventory_source"] is None
 

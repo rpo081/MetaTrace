@@ -58,6 +58,7 @@ export interface RescanDeltaResponse {
 
 export interface Stats {
   indexed: number
+  snapshot_image_count?: number | null
   state: string
   last_report: ScanReport | null
   inventory_source?: 'snapshot' | 'walk' | null

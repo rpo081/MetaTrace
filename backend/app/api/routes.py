@@ -73,6 +73,35 @@ def _store_file(settings, rel_path: str) -> Path:
     return src
 
 
+def _snapshot_image_count(settings, state) -> int | None:
+    path = settings.store_snapshot_file
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+
+    cache = getattr(state, "_snapshot_image_count_cache", None)
+    fingerprint = (stat.st_mtime_ns, stat.st_size)
+    if cache and cache[0] == fingerprint:
+        return cache[1]
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not read store snapshot image count: %s", exc)
+        return cache[1] if cache else None
+
+    entries = payload.get("files") if isinstance(payload, dict) and "files" in payload else payload
+    if not isinstance(entries, dict):
+        log.warning("ignoring invalid store snapshot payload in %s", path.name)
+        return cache[1] if cache else None
+
+    count = sum(1 for rel_path in entries if Path(rel_path).suffix.lower() in settings.extensions)
+    state._snapshot_image_count_cache = (fingerprint, count)
+    return count
+
+
 @router.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -85,6 +114,7 @@ def stats(request: Request) -> dict:
     return {
         "indexed": st.indexer.count,
         "db_count": db.count(s.db_path),
+        "snapshot_image_count": _snapshot_image_count(s, st),
         "state": st.indexer.status["state"],
         "last_report": st.indexer.status["last_report"],
         "inventory_source": st.indexer.status.get("inventory_source"),

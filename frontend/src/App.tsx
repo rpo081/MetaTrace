@@ -215,6 +215,9 @@ export default function App() {
   const paused = stats?.state === 'paused'
   const scanActive = scanning || paused
   const inventoryLabel = inventorySourceLabel(stats?.inventory_source)
+  const indexedLabel = stats?.snapshot_image_count == null
+    ? `${stats?.indexed} indexed`
+    : `${stats.indexed} / ${stats.snapshot_image_count} indexed`
 
   const controlScan = useCallback(
     async (action: 'pause' | 'resume') => {
@@ -244,7 +247,7 @@ export default function App() {
           {stats ? (
             <>
               <span className={`pill ${scanActive ? 'pill-busy' : ''}`}>
-                {scanning ? 'scanning…' : paused ? 'paused' : `${stats.indexed} indexed`}
+                {scanning ? 'scanning…' : paused ? 'paused' : indexedLabel}
               </span>
               <span className="muted">{stats.model}</span>
               {scanActive && inventoryLabel && <span className="muted">{inventoryLabel}</span>}
