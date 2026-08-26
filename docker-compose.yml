@@ -11,6 +11,13 @@ services:
       NETWORK_ROOT: ${NETWORK_ROOT:-}
       RUN_INITIAL_SCAN_ON_START: ${RUN_INITIAL_SCAN_ON_START:-true}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
+      # Scan throughput tuning — runtime-tunable via .env, no rebuild needed
+      # (`docker compose up -d` recreates the container).
+      BATCH_SIZE: ${BATCH_SIZE:-64}
+      DECODE_WORKERS: ${DECODE_WORKERS:-4}
+      DECODE_PREFETCH: ${DECODE_PREFETCH:-16}
+      # PSD composite pixel cap (OOM guard for huge renders).
+      METATRACE_MAX_PIXELS: ${METATRACE_MAX_PIXELS:-100000000}
       # Mutating-endpoint guard (X-Admin-Token header); empty = trusted-LAN mode.
       METATRACE_ADMIN_TOKEN: ${METATRACE_ADMIN_TOKEN:-}
       # Extra CORS origins (comma-separated); empty = no CORS middleware.

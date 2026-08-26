@@ -200,7 +200,8 @@ Environment variables (or `.env`, see `.env.example`):
 | `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; see macOS note in implementation notes |
 | `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency — keep modest for print-resolution renders |
 | `DECODE_WORKERS` | `4` | scan-time threads for image decode + sha256 (PIL/psd-tools) |
-| `DECODE_PREFETCH` | `16` | max fully decoded images held in memory during a scan chunk (bounded window) |
+| `DECODE_PREFETCH` | `16` | max decoded images held in memory during a scan chunk (bounded window; frames are downscaled to 512 px in the worker) |
+| `METATRACE_MAX_PIXELS` | `100000000` | hard pixel cap for PSD composite rendering (OOM/decompression-bomb guard) |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |
 | `USE_STORE_SNAPSHOT_FOR_INITIAL_SCAN` | `true` | prefer `data/store_snapshot_latest.json` over a filesystem walk when building scan inventory |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `24` / `200` | result count limits |
@@ -223,6 +224,10 @@ Environment variables (or `.env`, see `.env.example`):
 - `BATCH_SIZE` trades throughput against responsiveness: larger batches reduce
   embedding overhead but increase RAM use, pause latency, and redo work after
   an unclean stop inside a batch.
+- All scan-tuning variables (`BATCH_SIZE`, `DECODE_WORKERS`, `DECODE_PREFETCH`,
+  `METATRACE_MAX_PIXELS`, `DEVICE`) are passed through docker-compose: change
+  them in `.env` and run `docker compose up -d` — the container is recreated,
+  **no image rebuild needed**.
 - Scans pipeline their stages: decode+hash run on `DECODE_WORKERS` threads with
   at most `DECODE_PREFETCH` decoded images in memory, and XMP extraction
   (exiftool subprocess) overlaps the GPU/CPU embedding step. Decoded frames are
