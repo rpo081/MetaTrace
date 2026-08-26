@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -627,7 +627,25 @@ class Indexer:
         assert self.index is not None
         entries = db.list_entries(s.db_path)
         db_ids = {e.id for e in entries.values()}
-        index_ids = {int(i) for i in faiss.vector_to_array(self.index.id_map)}
+        id_array = faiss.vector_to_array(self.index.id_map)
+        index_ids = {int(i) for i in id_array}
+
+        # Duplicate vectors under one id (pre-fix resume replays) are invisible
+        # to set comparison: ntotal > unique ids. Drop ALL copies of affected
+        # ids and their rows; the next scan re-embeds those files cleanly.
+        occurrences = Counter(int(i) for i in id_array)
+        dups = sorted(i for i, n in occurrences.items() if n > 1)
+        if dups:
+            log.warning(
+                "index contains %d duplicated vector id(s) (%d extra vector(s)); "
+                "removing them for a clean re-embed",
+                len(dups), int(self.index.ntotal) - len(occurrences),
+            )
+            self.index.remove_ids(np.array(dups, dtype="int64"))
+            db.remove_ids(s.db_path, dups)
+            db_ids = {e.id for e in db.list_entries(s.db_path).values()}
+            index_ids -= set(dups)
+
         orphans = sorted(index_ids - db_ids)
         holes = sorted(db_ids - index_ids)
         if not orphans and not holes:
@@ -999,10 +1017,17 @@ class Indexer:
 
         xmp_map = xmp_future.result()
 
+        # Remove pre-existing vectors for EVERY file that already has a DB row
+        # — not only planned updates. Replayed work (resume from a stale
+        # checkpoint, re-applied delta) can list files as "added" that were
+        # already committed+published by the crashed run; skipping removal for
+        # those produced two vectors under one id (silent search dupes).
+        # remove_ids is a no-op for genuinely new files, so this is cheap and
+        # makes re-processing idempotent.
         update_ids = [
             known[f.rel_path].id
             for f in ok_files
-            if f.rel_path not in added_set and f.rel_path in known
+            if f.rel_path in known
         ]
         if update_ids and index is not None:
             index.remove_ids(np.array(update_ids, dtype="int64"))

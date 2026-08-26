@@ -684,3 +684,79 @@ def test_stale_planning_checkpoint_is_discarded_on_boot(env, caplog):
     rep = ix2.incremental(trigger="initial-scan")
     assert rep.unchanged == 1 and rep.failed == 0
     assert ix2.status["state"] == "idle"
+
+
+def test_resume_replay_of_committed_files_does_not_duplicate(env):
+    """Resume from a STALE checkpoint replays files the crashed run had
+    already committed+published (after the last pause snapshot). Re-adding
+    them must not leave two vectors under one id."""
+    import faiss
+
+    ix, store, settings = env
+    _png(store / "a.png", (1, 1, 1))
+    ix.incremental(trigger="seed")
+    _png(store / "b.png", (2, 2, 2))
+    settings.ensure_dirs()
+    snapshot = {
+        "version": 1,
+        "created_utc": "2026-08-26T00:00:00Z",
+        "root_path": str(store),
+        "file_count": 2,
+        "files": {
+            "a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size},
+            "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
+        },
+    }
+    settings.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    # Stale checkpoint: b.png listed as remaining "added" work, although a
+    # later chunk of the crashed run already committed+published it.
+    checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    checkpoint_path.write_text(
+        '{"version":1,"phase":"pending","mode":"full","force_rebuild":false,'
+        '"trigger":"resume-test","model":"ViT-B-32-quickgelu:openai",'
+        '"report":{"trigger":"resume-test","started_at":1.0,"duration_sec":0.0,'
+        '"seen":2,"processed":1,"added":1,"updated":0,"removed":0,'
+        '"unchanged":0,"failed":0,"error_count":0},'
+        '"remaining_rel_paths":["b.png"],"remaining_added_rel_paths":["b.png"],'
+        '"updated_at":"2026-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+
+    resumed = indexer_mod.Indexer(settings)
+    resumed.load_or_create()
+    assert resumed.status["state"] == "paused"
+    resumed.resume_from_checkpoint()
+
+    ids = [int(i) for i in faiss.vector_to_array(resumed.index.id_map)]
+    assert len(ids) == len(set(ids)) == 2   # one vector per file, no dupes
+    assert resumed.count == 2
+
+
+def test_boot_repair_deduplicates_existing_duplicate_vectors(env):
+    """Legacy indexes with two vectors under one id (pre-fix resume replay)
+    are cleaned at startup: all copies dropped + row pruned -> clean re-embed."""
+    import faiss
+    import numpy as np
+
+    from backend.app import db
+
+    ix, store, s = env
+    _png(store / "a.png", (3, 3, 3))
+    ix.incremental(trigger="seed")
+
+    # Corrupt the persisted index the way old resume replays did.
+    idx = faiss.read_index(str(s.index_file))
+    row_id = db.list_entries(s.db_path)["a.png"].id
+    vec = np.zeros((1, 16), dtype="float32")
+    idx.add_with_ids(vec, np.array([row_id], dtype="int64"))
+    faiss.write_index(idx, str(s.index_file))
+    assert int(idx.ntotal) == 2 and len(faiss.vector_to_array(idx.id_map)) == 2
+
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+
+    assert ix2.count == 0                      # both copies gone...
+    assert db.count(s.db_path) == 0            # ...and row pruned for re-embed
+    rep = ix2.incremental(trigger="heal")
+    assert rep.added == 1 and ix2.count == 1
