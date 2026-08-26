@@ -515,6 +515,37 @@ class Indexer:
             pending.append(disk_file)
         return pending
 
+    def _disk_file_from_live_stat(self, rel_path: str, report: ScanReport) -> DiskFile | None:
+        abs_path = self.settings.store_path / rel_path
+        try:
+            stat = abs_path.stat()
+        except OSError as exc:
+            report.failed += 1
+            report.processed += 1
+            report.errors.append(f"{rel_path}: {exc}")
+            log.warning("delta stat failed: %s (%s)", rel_path, exc)
+            return None
+        return DiskFile(
+            rel_path=rel_path,
+            abs_path=abs_path,
+            size=stat.st_size,
+            mtime=stat.st_mtime,
+        )
+
+    def _disk_file_for_delta_path(
+        self,
+        rel_path: str,
+        snapshot: dict[str, DiskFile] | None,
+        report: ScanReport,
+    ) -> DiskFile | None:
+        normalized = rel_path.replace("\\", "/")
+        if snapshot is not None:
+            disk_file = snapshot.get(normalized)
+            if disk_file is not None:
+                return disk_file
+            log.warning("delta path missing from store snapshot, falling back to live stat: %s", normalized)
+        return self._disk_file_from_live_stat(normalized, report)
+
     def _run_pending_batches(
         self,
         *,
@@ -726,7 +757,7 @@ class Indexer:
 
     def _scan(self, report: ScanReport, force_rebuild: bool, progress) -> None:
         s = self.settings
-        db.init_db(s.db_path)
+        db.init_db(s.db_path, configure_journal=False)
         known = db.list_entries(s.db_path)
         disk = self._load_snapshot_inventory()
         if disk is None:
@@ -804,13 +835,14 @@ class Indexer:
         - Minimal DB lookups
         """
         s = self.settings
-        db.init_db(s.db_path)
+        db.init_db(s.db_path, configure_journal=False)
         known = db.list_entries(s.db_path)
 
         changes = delta_info.get("changes", {})
         deleted_paths = set(changes.get("deleted", []))
         created_paths = set(changes.get("created", []))
         modified_paths = set(changes.get("modified", []))
+        snapshot = self._load_snapshot_inventory()
 
         # Report seen = total changes (not full store size)
         report.seen = len(deleted_paths) + len(created_paths) + len(modified_paths)
@@ -849,7 +881,7 @@ class Indexer:
                 progress(report)
 
         # === STEP 2: Handle created + modified files ===
-        # Convert rel_paths to DiskFile objects (need abs_path for image decoding)
+        # Prefer snapshot metadata so delta scans avoid per-file store stats.
         to_process = []
         added_set = set()
         
@@ -859,16 +891,10 @@ class Indexer:
                 progress,
                 snapshot=lambda: self._save_planning_checkpoint("delta", False, report, delta_info),
             )
-            abs_path = s.store_path / rel_path
-            if abs_path.exists():
-                stat = abs_path.stat()
-                to_process.append(DiskFile(
-                    rel_path=rel_path,
-                    abs_path=abs_path,
-                    size=stat.st_size,
-                    mtime=stat.st_mtime
-                ))
-                added_set.add(rel_path)
+            disk_file = self._disk_file_for_delta_path(rel_path, snapshot, report)
+            if disk_file is not None:
+                to_process.append(disk_file)
+                added_set.add(disk_file.rel_path)
         
         # Remove stale vectors for modified files before re-adding
         for rel_path in modified_paths:
@@ -878,15 +904,9 @@ class Indexer:
                 snapshot=lambda: self._save_planning_checkpoint("delta", False, report, delta_info),
             )
             if rel_path in known:
-                abs_path = s.store_path / rel_path
-                if abs_path.exists():
-                    stat = abs_path.stat()
-                    to_process.append(DiskFile(
-                        rel_path=rel_path,
-                        abs_path=abs_path,
-                        size=stat.st_size,
-                        mtime=stat.st_mtime
-                    ))
+                disk_file = self._disk_file_for_delta_path(rel_path, snapshot, report)
+                if disk_file is not None:
+                    to_process.append(disk_file)
         
         working = self._run_pending_batches(
             report=report,

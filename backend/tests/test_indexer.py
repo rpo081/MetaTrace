@@ -176,6 +176,42 @@ def test_non_initial_full_scan_can_use_store_snapshot_inventory(env, monkeypatch
     assert ix.status["inventory_source"] == "snapshot"
 
 
+def test_delta_scan_uses_store_snapshot_metadata(env, monkeypatch):
+    ix, store, s = env
+    _png(store / "a.png", (5, 5, 5))
+    ix.incremental(trigger="seed")
+    _png(store / "b.png", (6, 6, 6))
+    s.ensure_dirs()
+    snapshot = {
+        "version": 1,
+        "created_utc": "2026-08-25T00:00:00Z",
+        "root_path": str(store),
+        "file_count": 2,
+        "files": {
+            "a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size},
+            "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
+        },
+    }
+    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
+    original_exists = indexer_mod.Path.exists
+
+    def exists_without_delta_file_stat(self):
+        if self == store / "b.png":
+            pytest.fail("delta scan should use snapshot metadata instead of probing the changed file")
+        return original_exists(self)
+
+    monkeypatch.setattr(indexer_mod.Path, "exists", exists_without_delta_file_stat)
+
+    rep = ix.incremental(
+        trigger="delta",
+        delta_info={"changes": {"created": ["b.png"], "modified": [], "deleted": []}},
+    )
+    assert rep.added == 1
+    assert ix.status["inventory_source"] == "snapshot"
+
+
 def test_deleted_index_self_heals_via_full_rebuild(env, caplog):
     """Index file gone + intact DB -> loud warning, DB reset, next scan re-adds all."""
     import logging

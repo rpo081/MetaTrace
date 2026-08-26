@@ -39,13 +39,14 @@ class Entry:
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=60)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
-def init_db(db_path: Path) -> None:
+def init_db(db_path: Path, *, configure_journal: bool = True) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(connect(db_path)) as conn:
+        if configure_journal:
+            conn.execute("PRAGMA journal_mode=DELETE")
         conn.executescript(_SCHEMA)
 
 

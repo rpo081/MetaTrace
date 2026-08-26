@@ -1,3 +1,5 @@
+import sqlite3
+
 import backend.app.db as db
 
 
@@ -99,3 +101,20 @@ def test_reset(tmp_path):
     db.reset(p)
     assert db.count(p) == 0
     assert db.list_entries(p) == {}
+
+
+def test_init_db_disables_wal_churn_for_short_read_connections(tmp_path):
+    p = tmp_path / "wal.db"
+    with sqlite3.connect(p) as conn:
+        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    db.init_db(p)
+    with sqlite3.connect(p) as conn:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "delete"
+
+    db.count(p)
+    db.kv_get(p, "last_scan")
+    assert not p.with_suffix(".db-wal").exists()
+    assert not p.with_suffix(".db-shm").exists()
