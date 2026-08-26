@@ -23,6 +23,8 @@ EXCLUDED_DIR_NAMES = {
     "references", "referenzen",
 }
 MAX_SEQUENCE_IMAGES = 100
+# Dateien über diesem Limit (in MB) werden nicht kopiert; 0 = unbegrenzt.
+MAX_FILE_SIZE_MB = 20
 EXCLUDED_DIR_LEVELS = 2
 ROBOCOPY_THREADS = 32
 ROBOCOPY_PROCESSES = 8
@@ -193,6 +195,25 @@ def filter_images(paths, all_paths, root):
     ]
 
 
+def filter_oversized(paths, sizes, limit_mb):
+    """Split paths into kept files and files above the size limit.
+
+    ``sizes`` maps full path -> byte size (from a snapshot). Files without a
+    known size are kept. ``limit_mb <= 0`` disables the filter.
+    """
+    if not limit_mb or limit_mb <= 0:
+        return list(paths), []
+    limit = limit_mb * 1024 * 1024
+    kept, too_large = [], []
+    for path in paths:
+        size = sizes.get(path)
+        if size is not None and size > limit:
+            too_large.append(path)
+        else:
+            kept.append(path)
+    return kept, too_large
+
+
 def filter_existing_target_files(paths, source_root, target_root, source_snapshot):
     """Drop files that already exist in the target with the same size."""
     if not os.path.isdir(longpath(target_root)):
@@ -356,13 +377,24 @@ def run(source_root, target_root):
         if os.path.splitext(os.path.basename(path))[1].lower() in EXTENSIONS
     ]
     copy_paths = filter_images(image_paths, all_image_paths, source_root)
+    filtered_count = len(image_paths) - len(copy_paths)
+    file_sizes = {path: meta[1] for path, meta in new.items()}
+    copy_paths, oversized = filter_oversized(copy_paths, file_sizes, MAX_FILE_SIZE_MB)
+    if oversized:
+        print(f"{len(oversized)} Dateien ueber {MAX_FILE_SIZE_MB} MB ausgeschlossen:")
+        for path in oversized[:10]:
+            print(f"  ZU GROSS: {path} ({format_size(file_sizes[path])})")
+        if len(oversized) > 10:
+            print(f"  ... und {len(oversized) - 10} weitere")
     copy_paths, existing_count = filter_existing_target_files(
         copy_paths, source_root, target_root, new
     )
     print(f"{existing_count} Dateien wegen vorhandenem Zielbestand ausgeschlossen.")
     copy_bytes = sum(changed[path][1] for path in copy_paths)
-    print(f"{len(image_paths) - len(copy_paths)} von {len(image_paths)} Bildern durch "
-          f"Ordner- und Sequenzfilter ausgeschlossen.")
+    print(
+        f"{filtered_count} von {len(image_paths)} Bildern durch Ordner- und "
+        f"Sequenzfilter ausgeschlossen, {len(oversized)} durch den Größenfilter."
+    )
     print(
         f"Es sollen {len(copy_paths)} geänderte Dateien "
         f"({format_size(copy_bytes)}) nach {target_root} kopiert werden."

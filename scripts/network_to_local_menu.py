@@ -40,6 +40,7 @@ DEFAULT_EXCLUDE_LEVELS = nc.EXCLUDED_DIR_LEVELS
 DEFAULT_EXCLUDE_PATHS = sorted(nc.EXCLUDED_SCAN_PATHS)
 DEFAULT_EXCLUDE_DIRS = sorted(nc.EXCLUDED_DIR_NAMES)
 DEFAULT_EXTENSIONS = sorted(nc.EXTENSIONS)
+DEFAULT_MAX_FILE_SIZE_MB = nc.MAX_FILE_SIZE_MB
 
 
 @dataclass
@@ -56,6 +57,7 @@ class Settings:
     extensions: list[str] = field(
         default_factory=lambda: list(DEFAULT_EXTENSIONS)
     )
+    max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB
 
     @classmethod
     def load(cls, path: Path) -> "Settings":
@@ -78,6 +80,10 @@ class Settings:
         self.exclude_paths = _clean_list(self.exclude_paths, clean_exclude_path)
         self.exclude_dirs = _clean_list(self.exclude_dirs, clean_dir_name)
         self.extensions = _clean_list(self.extensions, clean_extension)
+        try:
+            self.max_file_size_mb = max(0, int(self.max_file_size_mb))
+        except (TypeError, ValueError):
+            self.max_file_size_mb = DEFAULT_MAX_FILE_SIZE_MB
 
 
 @dataclass
@@ -190,6 +196,7 @@ def apply_settings(settings: Settings) -> None:
     nc.EXCLUDED_SCAN_PATHS = set(settings.exclude_paths)
     nc.EXCLUDED_DIR_NAMES = set(settings.exclude_dirs)
     nc.EXTENSIONS = set(settings.extensions)
+    nc.MAX_FILE_SIZE_MB = settings.max_file_size_mb
 
 
 def clean_preset_name(text: str) -> str | None:
@@ -203,6 +210,7 @@ def summary_rows(config: PresetConfig) -> list[str]:
     paths = ", ".join(settings.exclude_paths) if settings.exclude_paths else "–"
     dirs = ", ".join(settings.exclude_dirs) if settings.exclude_dirs else "–"
     exts = " ".join(settings.extensions) if settings.extensions else "–"
+    max_mb = f"{settings.max_file_size_mb} MB" if settings.max_file_size_mb else "ohne Limit"
     return [
         f"{sm.BOLD}── MetaTrace Netzwerk-Kopie ────────────────────{sm.RESET}",
         f"  {sm.DIM}Preset        {sm.RESET}{config.current_name()}",
@@ -210,8 +218,9 @@ def summary_rows(config: PresetConfig) -> list[str]:
         f"  {sm.DIM}Ziel          {sm.RESET}{sm.shorten(settings.dst) or '–'}",
         f"  {sm.DIM}Exclude-Ebenen{sm.RESET} {settings.exclude_levels}",
         f"  {sm.DIM}Exclude-Pfade {sm.RESET}{sm.shorten(paths)}",
-        f"  {sm.DIM}Exclude-Ordner{sm.RESET} {sm.shorten(dirs)}",
+        f"  {sm.DIM}Exclude-Ordner{sm.RESET}{sm.shorten(dirs)}",
         f"  {sm.DIM}Extensions    {sm.RESET}{sm.shorten(exts)}",
+        f"  {sm.DIM}Max-Dateigröße{sm.RESET} {max_mb}",
         "",
     ]
 
@@ -252,10 +261,12 @@ def edit_settings(settings: Settings, config: PresetConfig, config_path: Path) -
             f"Exclude-Pfade   {len(settings.exclude_paths)}",
             f"Exclude-Ordner  {len(settings.exclude_dirs)}",
             f"Extensions      {len(settings.extensions)}",
+            f"Max-Dateigröße  "
+            f"{settings.max_file_size_mb if settings.max_file_size_mb else 'ohne Limit'}",
             "Zurück",
         ]
         choice = sm.choose("Einstellungen", options, framed=True)
-        if choice is None or choice == 6:
+        if choice is None or choice == 7:
             return
         if choice == 0:
             settings.src = sm.pick_folder("Quelle (Netzwerkshare)", settings.src)
@@ -288,6 +299,13 @@ def edit_settings(settings: Settings, config: PresetConfig, config_path: Path) -
                 "Extension (z. B. .webp)",
                 clean_extension,
             )
+        elif choice == 6:
+            raw = input(
+                f"Max-Dateigröße in MB (0 = ohne Limit) "
+                f"[{settings.max_file_size_mb}]: "
+            ).strip()
+            if raw.isdigit():
+                settings.max_file_size_mb = max(0, int(raw))
         config.save(config_path)
 
 
