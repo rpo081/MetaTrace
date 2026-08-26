@@ -394,6 +394,34 @@ def test_long_scan_publishes_progress_periodically(env, monkeypatch):
     assert published[-1] == 3
 
 
+def test_decode_downscales_but_keeps_original_dimensions(env, monkeypatch):
+    """Scan-time decode shrinks frames before they enter the prefetch window
+    (OOM guard for 100+ Mpixel renders) while DB rows keep the ORIGINAL
+    dimensions."""
+    ix, store, s = env
+    from backend.app import db
+
+    real_embed = indexer_mod.embeddings.embed_images
+    sizes_seen: list[tuple[int, int]] = []
+
+    def spy_embed(images, settings):
+        sizes_seen.extend(img.size for img in images)
+        return real_embed(images, settings)
+
+    monkeypatch.setattr(indexer_mod.embeddings, "embed_images", spy_embed)
+
+    Image.new("RGB", (2000, 1000), (9, 9, 9)).save(store / "big.png")
+    rep = ix.incremental(trigger="t")
+    assert rep.added == 1
+
+    assert sizes_seen and all(
+        w <= indexer_mod.SCAN_DECODE_MAX_SIDE and h <= indexer_mod.SCAN_DECODE_MAX_SIDE
+        for w, h in sizes_seen
+    )
+    row = db.get_by_id(s.db_path, db.list_entries(s.db_path)["big.png"].id)
+    assert (row["width"], row["height"]) == (2000, 1000)
+
+
 def test_scan_never_mutates_published_index(env):
     """H1 regression: an incremental scan must clone the published FAISS index
     before remove_ids/add_with_ids. Mutating the object that lock-free search

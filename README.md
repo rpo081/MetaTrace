@@ -225,9 +225,13 @@ Environment variables (or `.env`, see `.env.example`):
   an unclean stop inside a batch.
 - Scans pipeline their stages: decode+hash run on `DECODE_WORKERS` threads with
   at most `DECODE_PREFETCH` decoded images in memory, and XMP extraction
-  (exiftool subprocess) overlaps the GPU/CPU embedding step. DB writes are
-  batched into one transaction per chunk. On CUDA, embedding runs in fp16
-  autocast (float32 output) with TF32 matmuls enabled.
+  (exiftool subprocess) overlaps the GPU/CPU embedding step. Decoded frames are
+  downscaled to `SCAN_DECODE_MAX_SIDE` (512 px) inside the worker — CLIP only
+  consumes 224 px inputs, so full-resolution frames never enter the scan
+  pipeline's memory window. DB rows keep the original width/height. DB writes
+  are batched into one transaction per chunk, and the working index is
+  published periodically (`PUBLISH_INTERVAL_SEC`). On CUDA, embedding runs in
+  fp16 autocast (float32 output) with TF32 matmuls enabled.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
 - Thumbnails are generated once per `(id, size)` and served from disk cache.
 

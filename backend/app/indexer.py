@@ -27,6 +27,10 @@ SCAN_CHECKPOINT_VERSION = 1
 # the whole scan (the DB commits per chunk; without periodic publishes any
 # interruption left the DB permanently ahead of the published index).
 PUBLISH_INTERVAL_SEC = 30.0
+# Scan-time decode downscales to this max side before the image enters the
+# prefetch window / chunk list. CLIP preprocesses to 224 px; original
+# dimensions are captured before downscaling and stored in the DB.
+SCAN_DECODE_MAX_SIDE = 512
 
 
 def _quarantine_corrupt_index(index_file: Path) -> Path:
@@ -899,7 +903,12 @@ class Indexer:
 
     def _decode_and_hash(self, f: DiskFile):
         img = embeddings.decode_image(f.abs_path)
-        return f, img, sha256_file(f.abs_path)
+        dims = img.size  # original (width, height) for the DB row
+        # Downscale in the worker: CLIP consumes 224 px inputs, so shipping
+        # 100+ Mpixel frames (hundreds of MB RGB each) through the prefetch
+        # window and the per-chunk accumulation list OOM-kills the container.
+        img.thumbnail((SCAN_DECODE_MAX_SIDE, SCAN_DECODE_MAX_SIDE))
+        return f, img, sha256_file(f.abs_path), dims
 
     def _process_chunk(
         self,
@@ -959,11 +968,11 @@ class Indexer:
                 ),
             )
             try:
-                done_file, img, sha = fut.result()
+                done_file, img, sha, dims_xy = fut.result()
                 images.append(img)
                 ok_files.append(done_file)
                 shas[done_file.rel_path] = sha
-                dims[done_file.rel_path] = img.size  # (width, height)
+                dims[done_file.rel_path] = dims_xy  # original (width, height)
             except Exception as exc:  # noqa: BLE001 - one bad file must not kill the scan
                 report.failed += 1
                 report.errors.append(f"{f.rel_path}: {exc}")
