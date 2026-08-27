@@ -95,7 +95,7 @@ export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Prop
             ⌕
           </div>
           <p>Drop an image here or click to browse</p>
-          <p className="muted">JPG · PNG · PSD</p>
+          <p className="muted">JPG · PNG · TIF</p>
         </div>
       )}
     </div>
