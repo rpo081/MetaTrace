@@ -12,8 +12,22 @@ function fmtDuration(sec: number): string {
   return sec >= 10 ? `${Math.round(sec)}s` : `${Math.round(sec * 10) / 10}s`
 }
 
-function ScanReportLine({ report, state }: { report: ScanReport; state: string | undefined }) {
+function fmtRate(val: number | undefined): string {
+  if (val == null || val <= 0) return '0'
+  if (val >= 100) return `${Math.round(val)}`
+  return `${Math.round(val * 10) / 10}`
+}
+
+function getReportRates(report: ScanReport) {
   const indexed = report.added + report.updated
+  const elapsed = report.elapsed_sec ?? report.duration_sec ?? 0
+  const scansPerMin = report.scans_per_min ?? (elapsed > 0 ? (report.processed / elapsed) * 60 : 0)
+  const embedsPerMin = report.embeddings_per_min ?? (elapsed > 0 ? (indexed / elapsed) * 60 : 0)
+  return { indexed, elapsed, scansPerMin, embedsPerMin }
+}
+
+function ScanReportLine({ report, state }: { report: ScanReport; state: string | undefined }) {
+  const { indexed, scansPerMin, embedsPerMin } = getReportRates(report)
   return (
     <div className="scan-report" role="status">
       <span className="scan-report-label">
@@ -25,11 +39,13 @@ function ScanReportLine({ report, state }: { report: ScanReport; state: string |
       </span>
       <span className="mono">
         {state === 'scanning' || state === 'paused' ? (
-          <>{report.processed} / {report.seen} scanned · {indexed} embedded · {report.failed} failed</>
+          <>
+            {report.processed} / {report.seen} scanned ({fmtRate(scansPerMin)}/min) · {indexed} embedded ({fmtRate(embedsPerMin)}/min) · {report.failed} failed
+          </>
         ) : (
           <>
             +{report.added} added · {report.updated} updated · −{report.removed} removed ·{' '}
-            {report.failed} failed · {fmtDuration(report.duration_sec)}
+            {report.failed} failed · {fmtDuration(report.duration_sec)} ({fmtRate(scansPerMin)} scans/min · {fmtRate(embedsPerMin)} emb/min)
           </>
         )}
       </span>
@@ -249,6 +265,11 @@ export default function App() {
               <span className={`pill ${scanActive ? 'pill-busy' : ''}`}>
                 {scanning ? 'scanning…' : paused ? 'paused' : indexedLabel}
               </span>
+              {scanActive && stats.last_report && (
+                <span className="pill pill-speed" title="Scan and embedding speed">
+                  {fmtRate(getReportRates(stats.last_report).scansPerMin)} scans/min · {fmtRate(getReportRates(stats.last_report).embedsPerMin)} emb/min
+                </span>
+              )}
               <span className="muted">{stats.model}</span>
               {scanActive && inventoryLabel && <span className="muted">{inventoryLabel}</span>}
               {!stats.exiftool && (

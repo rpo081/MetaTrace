@@ -104,6 +104,10 @@ body {
   border-color: var(--accent);
   animation: pulse 1.2s ease-in-out infinite;
 }
+.pill-speed {
+  color: var(--accent);
+  border-color: var(--border);
+}
 .pill-warn {
   color: var(--amber);
   border-color: var(--amber);

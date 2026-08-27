@@ -29,6 +29,11 @@ export interface ScanReport {
   failed: number
   error_count?: number
   errors?: string[]
+  elapsed_sec?: number
+  scans_per_min?: number
+  embeddings_per_min?: number
+  scans_per_sec?: number
+  embeddings_per_sec?: number
 }
 
 export interface RescanDeltaSummary {

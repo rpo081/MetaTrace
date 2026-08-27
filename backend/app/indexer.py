@@ -49,6 +49,7 @@ class ScanReport:
     trigger: str = ""
     started_at: float = 0.0
     duration_sec: float = 0.0
+    paused_duration_sec: float = 0.0
     seen: int = 0
     processed: int = 0
     added: int = 0
@@ -67,6 +68,28 @@ class ScanReport:
         d = self.__dict__.copy()
         d.pop("errors")
         d["error_count"] = len(self.errors)
+
+        if self.duration_sec > 0:
+            elapsed = max(0.0, self.duration_sec - self.paused_duration_sec)
+        elif self.started_at > 0:
+            elapsed = max(0.0, time.time() - self.started_at - self.paused_duration_sec)
+        else:
+            elapsed = 0.0
+
+        d["elapsed_sec"] = round(elapsed, 1)
+
+        indexed = self.added + self.updated
+        if elapsed > 0:
+            d["scans_per_min"] = round((self.processed / elapsed) * 60, 1)
+            d["embeddings_per_min"] = round((indexed / elapsed) * 60, 1)
+            d["scans_per_sec"] = round(self.processed / elapsed, 2)
+            d["embeddings_per_sec"] = round(indexed / elapsed, 2)
+        else:
+            d["scans_per_min"] = 0.0
+            d["embeddings_per_min"] = 0.0
+            d["scans_per_sec"] = 0.0
+            d["embeddings_per_sec"] = 0.0
+
         return d
 
 
@@ -334,12 +357,15 @@ class Indexer:
             return
         if snapshot:
             snapshot()
+        pause_start = time.time()
         if self.status["state"] != "paused":
             self._set_state("paused")
             self.status["last_report"] = report.as_dict()
             if progress:
                 progress(report)
         self._pause_gate.wait()
+        paused_delta = max(0.0, time.time() - pause_start)
+        report.paused_duration_sec += paused_delta
         if self.status["state"] == "paused":
             self._clear_resume_checkpoint()
             self._set_state("scanning")
@@ -452,6 +478,7 @@ class Indexer:
         report = ScanReport(trigger=str(data.get("trigger", "resume")))
         report.started_at = float(data.get("started_at", time.time()))
         report.duration_sec = float(data.get("duration_sec", 0.0))
+        report.paused_duration_sec = float(data.get("paused_duration_sec", 0.0))
         report.seen = int(data.get("seen", 0))
         report.processed = int(data.get("processed", 0))
         report.added = int(data.get("added", 0))

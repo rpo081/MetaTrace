@@ -796,3 +796,21 @@ def test_boot_repair_deduplicates_existing_duplicate_vectors(env):
     assert db.count(s.db_path) == 0            # ...and row pruned for re-embed
     rep = ix2.incremental(trigger="heal")
     assert rep.added == 1 and ix2.count == 1
+
+
+def test_scan_report_speed_metrics():
+    report = indexer_mod.ScanReport(
+        trigger="test",
+        started_at=time.time() - 60.0,
+        duration_sec=60.0,
+        seen=120,
+        processed=120,
+        added=30,
+        updated=30,
+    )
+    d = report.as_dict()
+    assert d["elapsed_sec"] == 60.0
+    assert d["scans_per_min"] == 120.0
+    assert d["embeddings_per_min"] == 60.0
+    assert d["scans_per_sec"] == 2.0
+    assert d["embeddings_per_sec"] == 1.0

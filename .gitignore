@@ -22,6 +22,8 @@ metatrace.db*
 scripts/snapshots/*.json
 scripts/snapshots/diffs/*.json
 scripts/*.json
+*.log
+logs/
 
 # Editors / OS
 .DS_Store
