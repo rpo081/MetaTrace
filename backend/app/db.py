@@ -203,6 +203,11 @@ def kv_set(db_path: Path, key: str, value: str) -> None:
         )
 
 
+def kv_delete(db_path: Path, key: str) -> None:
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+
+
 def row_to_result(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],

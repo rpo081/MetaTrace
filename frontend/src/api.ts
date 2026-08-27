@@ -1,4 +1,11 @@
-import type { SearchCombineMode, SearchResponse, Stats, RescanDeltaResponse } from './types'
+import type {
+  SearchCombineMode,
+  SearchResponse,
+  Stats,
+  RescanDeltaResponse,
+  StoreSnapshotRunResult,
+  StoreSnapshotSettings,
+} from './types'
 
 /** Error carrying the HTTP status so callers can special-case codes (e.g. 409). */
 export class ApiError extends Error {
@@ -97,6 +104,23 @@ export async function resumeRescan(): Promise<void> {
 
 export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaResponse> {
   const res = await fetch('/api/rescan-delta', { signal })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+
+export async function getStoreSnapshotSettings(signal?: AbortSignal): Promise<StoreSnapshotSettings> {
+  const res = await fetch('/api/settings/store-snapshot', { signal })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+export async function runStoreSnapshot(): Promise<StoreSnapshotRunResult> {
+  const headers: Record<string, string> = {}
+  const token = getAdminToken()
+  if (token) headers['X-Admin-Token'] = token
+  const res = await fetch('/api/settings/store-snapshot/run', {
+    method: 'POST',
+    headers,
+  })
   if (!res.ok) await parseError(res)
   return res.json()
 }

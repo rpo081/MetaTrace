@@ -19,6 +19,7 @@ export interface SearchResponse {
 }
 
 export type SearchCombineMode = 'and' | 'or'
+export type AppPage = 'search' | 'settings'
 
 export interface ScanReport {
   trigger: string
@@ -62,6 +63,23 @@ export interface RescanDeltaResponse {
   summary?: RescanDeltaSummary
   changes?: RescanDelta['changes']
   message?: string
+}
+
+export interface StoreSnapshotSettings {
+  configured_root_path: string | null
+  root_path: string
+  default_root_path: string
+  uses_default: boolean
+  source: 'env' | 'store_path'
+}
+
+export interface StoreSnapshotRunResult {
+  root_path: string
+  duration_sec: number
+  initialized: boolean
+  summary: RescanDeltaSummary
+  changes: RescanDelta['changes']
+  delta_file: string | null
 }
 
 export interface Stats {

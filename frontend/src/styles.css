@@ -62,10 +62,33 @@ body {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
 .topbar h1 {
   font-size: 17px;
   margin: 0;
   letter-spacing: 0.5px;
+}
+.topbar-nav {
+  display: flex;
+  gap: 8px;
+}
+.nav-btn {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.nav-btn-active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(77, 163, 255, 0.12);
 }
 .topbar-stats {
   display: flex;
@@ -140,6 +163,91 @@ body {
   grid-template-columns: 1fr 340px;
   gap: 16px;
   align-items: start;
+}
+.settings-view {
+  flex: 1;
+  padding: 20px;
+}
+.settings-card {
+  max-width: 780px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.settings-header h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+.settings-header p {
+  margin: 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.text-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+.text-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.readonly-value {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  word-break: break-all;
+}
+.settings-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.settings-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-result-title {
+  font-weight: 600;
+}
+.summary-row {
+  word-break: break-all;
+}
+.summary-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.summary-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
 }
 
 /* ---------- dropzone ---------- */

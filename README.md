@@ -192,6 +192,7 @@ Environment variables (or `.env`, see `.env.example`):
 
 | Var | Default | Purpose |
 |---|---|---|
+| `LOCAL_IMAGE_STORE` | — | host path to the local image mirror in `.env`; Docker mounts it read-only to `/store`, and local non-Docker runs also accept it as the store root |
 | `STORE_PATH` | `/store` | local image mirror (read-only) |
 | `DATA_PATH` | `/data` | SQLite + FAISS + thumbnails |
 | `NETWORK_ROOT` | — | e.g. `\\nas\share\renderings`; prefixes `original_path` |
@@ -204,6 +205,7 @@ Environment variables (or `.env`, see `.env.example`):
 | `METATRACE_MAX_PIXELS` | `100000000` | hard pixel cap for PSD composite rendering (OOM/decompression-bomb guard) |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |
 | `USE_STORE_SNAPSHOT_FOR_INITIAL_SCAN` | `true` | prefer `data/store_snapshot_latest.json` over a filesystem walk when building scan inventory |
+| `METATRACE_SNAPSHOT_SCAN_ROOT` | — | optional override for the settings-page snapshot scan root; defaults to the effective image store |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `24` / `200` | result count limits |
 | `MIN_SCORE_DEFAULT` | `0.0` | default cosine cutoff |
 | `THUMB_SIZE` | `512` | default thumbnail max side |
