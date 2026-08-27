@@ -137,9 +137,27 @@ def test_cors_enabled_when_configured(tmp_path, monkeypatch):
         assert "access-control-allow-origin" not in {k.lower() for k in r2.headers}
 
 
-def test_search_requires_file(client):
+def test_search_requires_file_or_query(client):
     r = client.post("/api/search")
     assert r.status_code in (400, 422)
+
+
+def test_search_by_text_query(client):
+    r = client.post("/api/search", params={"q": "image"})
+    assert r.status_code == 200
+    assert "results" in r.json()
+
+
+def test_search_rejects_invalid_combine_mode(client):
+    r = client.post("/api/search", params={"q": "image", "combine": "xor"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "combine must be 'and' or 'or'"
+
+
+def test_search_accepts_or_mode(client):
+    r = client.post("/api/search", params={"q": "image", "combine": "or"})
+    assert r.status_code == 200
+    assert "results" in r.json()
 
 
 def test_search_rejects_undecodable_image(client):

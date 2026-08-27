@@ -4,10 +4,11 @@ import type { KeyboardEvent } from 'react'
 interface Props {
   previewUrl: string | null
   onFile: (file: File) => void
+  onClear?: () => void
   disabled?: boolean
 }
 
-export default function Dropzone({ previewUrl, onFile, disabled }: Props) {
+export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Props) {
   const [over, setOver] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -25,6 +26,9 @@ export default function Dropzone({ previewUrl, onFile, disabled }: Props) {
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
+      if (e.target !== e.currentTarget) {
+        return
+      }
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault()
         openPicker()
@@ -64,7 +68,27 @@ export default function Dropzone({ previewUrl, onFile, disabled }: Props) {
         }}
       />
       {previewUrl ? (
-        <img src={previewUrl} alt="query" className="query-preview" />
+        <div className="preview-wrap">
+          <img src={previewUrl} alt="query" className="query-preview" />
+          {onClear && (
+            <button
+              type="button"
+              className="btn-clear-image"
+              onClick={(e) => {
+                e.stopPropagation()
+                onClear()
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+              }}
+              title="Remove query image"
+              disabled={disabled}
+              aria-label="Remove query image"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       ) : (
         <div className="dropzone-hint">
           <div className="dropzone-icon" aria-hidden>

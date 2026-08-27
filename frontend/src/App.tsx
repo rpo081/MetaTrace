@@ -3,7 +3,7 @@ import { ApiError, getStats, searchImage, triggerRescan, getRescanDelta, pauseRe
 import Dropzone from './components/Dropzone'
 import DetailPanel from './components/DetailPanel'
 import ResultGrid from './components/ResultGrid'
-import type { ScanReport, SearchResponse, SearchResult, Stats, RescanDeltaResponse } from './types'
+import type { ScanReport, SearchCombineMode, SearchResponse, SearchResult, Stats, RescanDeltaResponse } from './types'
 
 const IDLE_REFRESH_MS = 10_000
 const ACTIVE_SCAN_REFRESH_MS = 1_000
@@ -113,6 +113,8 @@ export default function App() {
   const [delta, setDelta] = useState<RescanDeltaResponse | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [textQuery, setTextQuery] = useState('')
+  const [combineMode, setCombineMode] = useState<SearchCombineMode>('and')
   const [k, setK] = useState(5)
   const [minScore, setMinScore] = useState(0.0)
   const [loading, setLoading] = useState(false)
@@ -181,8 +183,16 @@ export default function App() {
     [stats?.max_upload_mb, previewUrl],
   )
 
+  const onClearFile = useCallback(() => {
+    setFile(null)
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl)
+      setPreviewUrl(null)
+    }
+  }, [previewUrl])
+
   const runSearch = useCallback(async () => {
-    if (!file) return
+    if (!file && !textQuery.trim()) return
     abortRef.current?.abort() // kill any in-flight search (stale-response race)
     const controller = new AbortController()
     abortRef.current = controller
@@ -191,7 +201,7 @@ export default function App() {
     setNotice(null)
     setSelected(null)
     try {
-      const res = await searchImage(file, k, minScore, controller.signal)
+      const res = await searchImage(file, k, minScore, textQuery, combineMode, controller.signal)
       setResponse(res)
     } catch (e) {
       if (controller.signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) {
@@ -205,7 +215,7 @@ export default function App() {
         refreshStats()
       }
     }
-  }, [file, k, minScore, refreshStats])
+  }, [file, textQuery, combineMode, k, minScore, refreshStats])
 
   const rescan = useCallback(
     async (rebuild: boolean, useDelta: boolean = true) => {
@@ -319,7 +329,64 @@ export default function App() {
 
       <main className="layout">
         <section className="sidebar">
-          <Dropzone previewUrl={previewUrl} onFile={onFile} disabled={loading} />
+          <Dropzone previewUrl={previewUrl} onFile={onFile} onClear={onClearFile} disabled={loading} />
+
+          <div className="text-search-box">
+            <label htmlFor="text-query-input" className="text-search-label">
+              Text / Project / XMP Search
+            </label>
+            <div className="text-search-input-wrap">
+              <input
+                id="text-query-input"
+                type="text"
+                className="text-search-input"
+                placeholder="Image name, project, XMP..."
+                value={textQuery}
+                onChange={(e) => setTextQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') runSearch()
+                }}
+                disabled={loading}
+              />
+              {textQuery && (
+                <button
+                  type="button"
+                  className="btn-clear-text"
+                  onClick={() => setTextQuery('')}
+                  title="Clear text search"
+                  disabled={loading}
+                  aria-label="Clear text search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            <div className="search-mode-toggle" role="group" aria-label="Combine image and text search">
+              <button
+                type="button"
+                className={`toggle-chip ${combineMode === 'and' ? 'toggle-chip-active' : ''}`}
+                onClick={() => setCombineMode('and')}
+                aria-pressed={combineMode === 'and'}
+                disabled={loading}
+              >
+                UND
+              </button>
+              <button
+                type="button"
+                className={`toggle-chip ${combineMode === 'or' ? 'toggle-chip-active' : ''}`}
+                onClick={() => setCombineMode('or')}
+                aria-pressed={combineMode === 'or'}
+                disabled={loading}
+              >
+                ODER
+              </button>
+            </div>
+            <div className="muted text-search-help">
+              {combineMode === 'and'
+                ? 'Mit Bild: nur Treffer, die visuell passen und im Namen/XMP passen.'
+                : 'Mit Bild: visuelle und textuelle Treffer werden zusammengefuehrt.'}
+            </div>
+          </div>
 
           <div className="controls">
             <label className="control">
@@ -352,7 +419,11 @@ export default function App() {
             </label>
           </div>
 
-          <button className="btn btn-primary" onClick={runSearch} disabled={!file || loading}>
+          <button
+            className="btn btn-primary"
+            onClick={runSearch}
+            disabled={(!file && !textQuery.trim()) || loading}
+          >
             {loading ? 'Searching…' : 'Search'}
           </button>
 

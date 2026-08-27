@@ -210,5 +210,55 @@ def row_to_result(row: sqlite3.Row) -> dict:
         "original_path": row["original_path"],
         "width": row["width"],
         "height": row["height"],
-        "xmp": json.loads(row["xmp"]),
+        "xmp": json.loads(row["xmp"]) if isinstance(row["xmp"], str) else row["xmp"],
     }
+
+
+def escape_like(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def matches_text(row: sqlite3.Row | dict, q: str) -> bool:
+    if not q or not q.strip():
+        return True
+    terms = [t.lower() for t in q.strip().split() if t]
+    if not terms:
+        return True
+    row_dict = dict(row) if hasattr(row, "keys") else (row if isinstance(row, dict) else {})
+    rel = str(row_dict.get("rel_path") or "").lower()
+    orig = str(row_dict.get("original_path") or "").lower()
+    xmp_val = row_dict.get("xmp", "{}")
+    if isinstance(xmp_val, dict):
+        xmp_str = json.dumps(xmp_val).lower()
+    elif isinstance(xmp_val, str):
+        xmp_str = xmp_val.lower()
+    else:
+        xmp_str = str(xmp_val).lower()
+
+    for term in terms:
+        if term not in rel and term not in orig and term not in xmp_str:
+            return False
+    return True
+
+
+def search_by_text(db_path: Path, q: str, limit: int = 100) -> list[sqlite3.Row]:
+    if not q or not q.strip():
+        return []
+    terms = [t.strip() for t in q.strip().split() if t.strip()]
+    if not terms:
+        return []
+
+    where_clauses = []
+    params: list[object] = []
+    for term in terms:
+        escaped = escape_like(term)
+        pattern = f"%{escaped}%"
+        where_clauses.append("(rel_path LIKE ? ESCAPE '\\' OR original_path LIKE ? ESCAPE '\\' OR xmp LIKE ? ESCAPE '\\')")
+        params.extend([pattern, pattern, pattern])
+
+    where_sql = " AND ".join(where_clauses)
+    sql = f"SELECT * FROM images WHERE {where_sql} ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    with closing(connect(db_path)) as conn:
+        return conn.execute(sql, tuple(params)).fetchall()

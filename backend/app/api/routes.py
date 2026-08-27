@@ -125,8 +125,10 @@ def stats(request: Request) -> dict:
     }
 
 
-async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
+async def _read_upload(file: UploadFile | None, max_bytes: int) -> bytes | None:
     """Read an upload in chunks, aborting as soon as the limit is exceeded."""
+    if file is None or not file.filename:
+        return None
     chunks: list[bytes] = []
     total = 0
     while chunk := await file.read(UPLOAD_CHUNK_BYTES):
@@ -137,14 +139,16 @@ async def _read_upload(file: UploadFile, max_bytes: int) -> bytes:
         chunks.append(chunk)
     data = b"".join(chunks)
     if not data:
-        raise HTTPException(400, "empty upload")
+        return None
     return data
 
 
 @router.post("/search")
 async def search(
     request: Request,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    q: str | None = Query(default=None),
+    combine: str = Query(default="and"),
     k: int | None = Query(default=None, ge=1),
     min_score: float = Query(default=None, ge=-1.0, le=1.0),
 ) -> dict:
@@ -154,11 +158,15 @@ async def search(
     k = min(k, s.max_top_k)
     if min_score is None:
         min_score = s.min_score_default
+    if combine.lower() not in {"and", "or"}:
+        raise HTTPException(400, "combine must be 'and' or 'or'")
 
     data = await _read_upload(file, s.max_upload_bytes)
+    if data is None and (not q or not q.strip()):
+        raise HTTPException(400, "Provide an image file or a text search query")
 
     try:
-        return st.search.search(data, k, min_score)
+        return st.search.search(data, k, min_score, q, combine)
     except (ValueError, UnidentifiedImageError):
         log.warning("search upload could not be decoded", exc_info=True)
         raise HTTPException(400, "could not decode image") from None

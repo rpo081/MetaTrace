@@ -2,6 +2,7 @@ export interface SearchResult {
   id: number
   score: number
   exact: boolean
+  source?: 'image' | 'text' | 'both'
   rel_path: string
   original_path: string
   width: number | null
@@ -16,6 +17,8 @@ export interface SearchResponse {
   exact_match: boolean
   results: SearchResult[]
 }
+
+export type SearchCombineMode = 'and' | 'or'
 
 export interface ScanReport {
   trigger: string

@@ -11,29 +11,44 @@ class SearchService:
         self.indexer = indexer
         self.settings = settings
 
-    def search(self, image_bytes: bytes, k: int, min_score: float) -> dict:
+    @staticmethod
+    def _result_from_row(row, *, score: float, exact: bool, source: str) -> dict:
+        return {
+            **db.row_to_result(row),
+            "score": round(float(score), 4),
+            "exact": exact,
+            "source": source,
+            "thumb_url": f"/api/thumb/{row['id']}?v=png1",
+            "file_url": f"/api/file/{row['id']}",
+        }
+
+    def _text_results(self, q: str, k: int) -> list[dict]:
+        rows = db.search_by_text(self.settings.db_path, q, limit=k)
+        return [
+            self._result_from_row(row, score=1.0, exact=False, source="text")
+            for row in rows
+        ]
+
+    def _image_results(self, image_bytes: bytes, k: int, min_score: float, q: str | None = None) -> tuple[int, bool, list[dict]]:
         s = self.settings
 
-        # Early-out only; the authoritative snapshot happens after embedding.
         with self.indexer.lock:
             index = self.indexer.index
             if index is None or int(index.ntotal) == 0:
-                return {"total_indexed": 0, "exact_match": False, "results": []}
+                return 0, False, []
 
         img = embeddings.decode_image(image_bytes)
         vector = embeddings.embed_images([img], s)[0]
         sha = hashlib.sha256(image_bytes).hexdigest()
 
-        # Snapshot the index reference under a brief lock, then run the FAISS
-        # query WITHOUT holding Indexer._lock. Scans build on a private working
-        # copy and swap the new index in atomically, so the snapshotted object
-        # is never mutated after publication — flat-index reads are safe.
         with self.indexer.lock:
             index = self.indexer.index
         total = int(index.ntotal) if index is not None else 0
         if total == 0:
-            return {"total_indexed": 0, "exact_match": False, "results": []}
-        fetch = min(total, max(k * 3, k + 10))
+            return 0, False, []
+
+        # For image+text AND we must not truncate before applying the text filter.
+        fetch = total if q else min(total, max(k * 3, k + 10))
         scores, ids = index.search(vector.reshape(1, -1).astype("float32"), fetch)
 
         rows = db.fetch_by_ids(s.db_path, [int(i) for i in ids[0] if i >= 0])
@@ -46,16 +61,10 @@ class SearchService:
             row = by_id.get(int(sid))
             if row is None or int(sid) in seen_ids:
                 continue
+            if q and not db.matches_text(row, q):
+                continue
             seen_ids.add(int(sid))
-            item = {
-                **db.row_to_result(row),
-                "score": round(float(score), 4),
-                "exact": False,
-                # Cache-key version changes when the thumbnail encoding changes,
-                # so clients do not retain legacy JPEGs after a PNG migration.
-                "thumb_url": f"/api/thumb/{row['id']}?v=png1",
-                "file_url": f"/api/file/{row['id']}",
-            }
+            item = self._result_from_row(row, score=float(score), exact=False, source="image")
             if row["sha256"] and row["sha256"] == sha and exact_hit is None:
                 item["exact"] = True
                 item["score"] = 1.0
@@ -66,8 +75,83 @@ class SearchService:
         results = ([exact_hit] if exact_hit else []) + [
             r for r in ranked if r["score"] >= min_score
         ]
+        return total, exact_hit is not None, results[:k]
+
+    @staticmethod
+    def _merge_or_results(image_results: list[dict], text_results: list[dict], k: int) -> list[dict]:
+        merged: dict[int, dict] = {}
+
+        for item in text_results:
+            merged[int(item["id"])] = item.copy()
+
+        for item in image_results:
+            existing = merged.get(int(item["id"]))
+            if existing is None:
+                merged[int(item["id"])] = item.copy()
+                continue
+            existing["source"] = "both"
+            existing["score"] = max(float(existing.get("score", 0.0)), float(item.get("score", 0.0)))
+            existing["exact"] = bool(existing.get("exact")) or bool(item.get("exact"))
+
+        priority = {"both": 0, "image": 1, "text": 2}
+        return sorted(
+            merged.values(),
+            key=lambda item: (
+                priority.get(str(item.get("source")), 3),
+                -float(item.get("score", 0.0)),
+                str(item.get("rel_path", "")),
+            ),
+        )[:k]
+
+    def search(
+        self,
+        image_bytes: bytes | None = None,
+        k: int = 5,
+        min_score: float = 0.0,
+        q: str | None = None,
+        combine: str = "and",
+    ) -> dict:
+        q_clean = q.strip() if q and q.strip() else None
+        combine_mode = combine.lower()
+        if combine_mode not in {"and", "or"}:
+            raise ValueError("invalid combine mode")
+
+        if not image_bytes:
+            if not q_clean:
+                return {"total_indexed": self.indexer.count, "exact_match": False, "results": []}
+            total = db.count(self.settings.db_path)
+            return {
+                "total_indexed": total,
+                "exact_match": False,
+                "results": self._text_results(q_clean, k),
+            }
+
+        total, exact_match, image_results = self._image_results(
+            image_bytes,
+            k,
+            min_score,
+            q_clean if combine_mode == "and" else None,
+        )
+
+        if not q_clean:
+            return {
+                "total_indexed": total,
+                "exact_match": exact_match,
+                "results": image_results,
+            }
+
+        if combine_mode == "and":
+            for item in image_results:
+                item["source"] = "both"
+            return {
+                "total_indexed": total,
+                "exact_match": exact_match,
+                "results": image_results,
+            }
+
+        text_results = self._text_results(q_clean, k)
         return {
             "total_indexed": total,
-            "exact_match": exact_hit is not None,
-            "results": results[:k],
+            "exact_match": exact_match,
+            "results": self._merge_or_results(image_results, text_results, k),
         }

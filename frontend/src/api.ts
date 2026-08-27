@@ -1,4 +1,4 @@
-import type { SearchResponse, Stats, RescanDeltaResponse } from './types'
+import type { SearchCombineMode, SearchResponse, Stats, RescanDeltaResponse } from './types'
 
 /** Error carrying the HTTP status so callers can special-case codes (e.g. 409). */
 export class ApiError extends Error {
@@ -23,14 +23,26 @@ async function parseError(res: Response): Promise<never> {
 }
 
 export async function searchImage(
-  file: File,
+  file: File | null,
   k: number,
   minScore: number,
+  q?: string,
+  combine: SearchCombineMode = 'and',
   signal?: AbortSignal,
 ): Promise<SearchResponse> {
   const form = new FormData()
-  form.append('file', file)
-  const res = await fetch(`/api/search?k=${k}&min_score=${minScore}`, {
+  if (file) {
+    form.append('file', file)
+  }
+  const params = new URLSearchParams({
+    k: String(k),
+    min_score: String(minScore),
+    combine,
+  })
+  if (q && q.trim()) {
+    params.set('q', q.trim())
+  }
+  const res = await fetch(`/api/search?${params.toString()}`, {
     method: 'POST',
     body: form,
     signal,

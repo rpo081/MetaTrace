@@ -179,6 +179,103 @@ body {
   max-height: 280px;
   border-radius: 8px;
 }
+.preview-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.btn-clear-image {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-clear-image:hover:not(:disabled) {
+  background: var(--red);
+  border-color: var(--red);
+}
+
+/* ---------- text search box ---------- */
+.text-search-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.text-search-label {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+.text-search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.text-search-input {
+  width: 100%;
+  padding: 8px 30px 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.text-search-input:focus {
+  border-color: var(--accent);
+}
+.btn-clear-text {
+  position: absolute;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  line-height: 1;
+}
+.btn-clear-text:hover:not(:disabled) {
+  color: var(--text);
+}
+.search-mode-toggle {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.toggle-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.toggle-chip-active {
+  color: var(--on-accent);
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+}
+.text-search-help {
+  font-size: 12px;
+}
 
 /* ---------- controls ---------- */
 .controls {
@@ -346,6 +443,13 @@ input[type='range'] {
   right: auto;
   color: var(--green);
   border: 1px solid var(--green);
+}
+.badge-source {
+  left: 6px;
+  right: auto;
+  top: 30px;
+  color: var(--text);
+  border: 1px solid var(--border);
 }
 .badge-score {
   color: var(--text);
