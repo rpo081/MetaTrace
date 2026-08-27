@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Local mirror of the network share (mounted read-only inside the container).
-    store_path: Path = Path("/store")
+    store_path: Path = Field(
+        default=Path("/store"),
+        validation_alias=AliasChoices("LOCAL_IMAGE_STORE", "STORE_PATH"),
+    )
     # Writable app data: SQLite database, FAISS index, thumbnail cache.
     data_path: Path = Path("/data")
     # Network share root, e.g. \\nas\share\renderings. When set, every result's
@@ -35,6 +38,10 @@ class Settings(BaseSettings):
 
     run_initial_scan_on_start: bool = True
     use_store_snapshot_for_initial_scan: bool = True
+    snapshot_scan_root: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("METATRACE_SNAPSHOT_SCAN_ROOT", "SNAPSHOT_SCAN_ROOT"),
+    )
 
     default_top_k: int = 24
     max_top_k: int = 200
@@ -94,8 +101,16 @@ class Settings(BaseSettings):
         return self.data_path / "thumbs"
 
     @property
-    def store_snapshot_file(self) -> Path:
+    def latest_store_snapshot_file(self) -> Path:
         return self.data_path / "store_snapshot_latest.json"
+
+    @property
+    def baseline_snapshot_file(self) -> Path:
+        return self.data_path / "store_snapshot.json"
+
+    @property
+    def default_snapshot_scan_root(self) -> Path:
+        return self.snapshot_scan_root or self.store_path
 
     @property
     def max_upload_bytes(self) -> int:

@@ -1,6 +1,7 @@
 """API tests with a temp store; no CLIP model needed for these endpoints."""
 import io
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app import embeddings, metadata
+from backend.app import store_snapshot
 from backend.app.config import Settings
 from backend.app.indexer import Indexer
 from backend.app.main import create_app
@@ -49,11 +51,14 @@ def test_metatrace_env_vars_map_to_settings(monkeypatch):
     """METATRACE_* names must reach the prefixed-off settings model."""
     from backend.app.config import Settings as S
 
+    monkeypatch.setenv("LOCAL_IMAGE_STORE", "Z:/images")
     monkeypatch.setenv("METATRACE_ADMIN_TOKEN", "abc")
     monkeypatch.setenv("METATRACE_CORS_ORIGINS", "http://a.example, http://b.example")
     s = S()
+    assert s.store_path == Path("Z:/images")
     assert s.admin_token == "abc"
     assert s.cors_origin_list == ["http://a.example", "http://b.example"]
+    monkeypatch.delenv("LOCAL_IMAGE_STORE")
     monkeypatch.delenv("METATRACE_ADMIN_TOKEN")
     monkeypatch.delenv("METATRACE_CORS_ORIGINS")
     s2 = S()
@@ -62,7 +67,7 @@ def test_metatrace_env_vars_map_to_settings(monkeypatch):
 
 def test_stats_sanitized_and_parity(client):
     """No absolute paths leak; db_count/max_upload_mb exposed for parity."""
-    client.app.state.settings.store_snapshot_file.write_text(
+    client.app.state.settings.latest_store_snapshot_file.write_text(
         json.dumps(
             {
                 "version": 1,
@@ -158,6 +163,88 @@ def test_search_accepts_or_mode(client):
     r = client.post("/api/search", params={"q": "image", "combine": "or"})
     assert r.status_code == 200
     assert "results" in r.json()
+
+
+def test_store_snapshot_settings_defaults_to_install_path(client):
+    r = client.get("/api/settings/store-snapshot")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["root_path"] == str(client.app.state.settings.store_path)
+    assert body["default_root_path"] == str(client.app.state.settings.store_path)
+    assert body["configured_root_path"] is None
+    assert body["uses_default"] is True
+    assert body["source"] == "store_path"
+
+
+def test_store_snapshot_settings_report_env_root(tmp_path, monkeypatch):
+    app, settings = _minimal_app(
+        tmp_path,
+        _monkeypatch=monkeypatch,
+        snapshot_scan_root=tmp_path / "share-root",
+    )
+    settings.snapshot_scan_root.mkdir(parents=True, exist_ok=True)
+    with TestClient(app) as c:
+        r = c.get("/api/settings/store-snapshot")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["root_path"] == str(settings.snapshot_scan_root)
+        assert body["configured_root_path"] == str(settings.snapshot_scan_root)
+        assert body["uses_default"] is False
+        assert body["source"] == "env"
+    app.state.scheduler.stop()
+
+
+def test_store_snapshot_run_uses_env_path(client, monkeypatch):
+    seen = {}
+
+    from backend.app.api import routes as routes_mod
+
+    def fake_detect_changes(*, root_path, snapshot_file, data_folder, allowed_extensions=None, on_progress=None):
+        seen["root_path"] = root_path
+        seen["snapshot_file"] = snapshot_file
+        seen["data_folder"] = data_folder
+        seen["allowed_extensions"] = allowed_extensions
+        return {
+            "root_path": str(root_path),
+            "duration_sec": 0.12,
+            "initialized": False,
+            "summary": {
+                "created_count": 1,
+                "deleted_count": 0,
+                "modified_count": 2,
+                "total_changes": 3,
+            },
+            "changes": {"created": ["a.png"], "deleted": [], "modified": ["b.png", "c.png"]},
+            "delta_file": "rescan_delta_latest.json",
+        }
+
+    monkeypatch.setattr(routes_mod.store_snapshot, "detect_changes", fake_detect_changes)
+    r = client.post("/api/settings/store-snapshot/run")
+    assert r.status_code == 200
+    assert r.json()["summary"]["total_changes"] == 3
+    assert seen["root_path"] == str(client.app.state.settings.default_snapshot_scan_root)
+    assert seen["snapshot_file"] == client.app.state.settings.baseline_snapshot_file
+    assert seen["data_folder"] == client.app.state.settings.data_path
+    assert seen["allowed_extensions"] == client.app.state.settings.extensions
+
+
+def test_store_snapshot_ignores_non_image_files(tmp_path):
+    root = tmp_path / "share"
+    root.mkdir()
+    (root / "render.png").write_bytes(b"png")
+    (root / "notes.txt").write_text("ignore me", encoding="utf-8")
+
+    snapshot_file = tmp_path / "data" / "store_snapshot.json"
+    result = store_snapshot.detect_changes(
+        root_path=root,
+        snapshot_file=snapshot_file,
+        data_folder=tmp_path / "data",
+    )
+
+    assert result["initialized"] is True
+    payload = json.loads(snapshot_file.read_text(encoding="utf-8"))
+    assert payload["file_count"] == 1
+    assert set(payload["files"]) == {"render.png"}
 
 
 def test_search_rejects_undecodable_image(client):

@@ -1,9 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, getStats, searchImage, triggerRescan, getRescanDelta, pauseRescan, resumeRescan } from './api'
+import {
+  ApiError,
+  getStats,
+  searchImage,
+  triggerRescan,
+  getRescanDelta,
+  pauseRescan,
+  resumeRescan,
+} from './api'
 import Dropzone from './components/Dropzone'
 import DetailPanel from './components/DetailPanel'
 import ResultGrid from './components/ResultGrid'
-import type { ScanReport, SearchCombineMode, SearchResponse, SearchResult, Stats, RescanDeltaResponse } from './types'
+import type {
+  AppPage,
+  ScanReport,
+  SearchCombineMode,
+  SearchResponse,
+  SearchResult,
+  Stats,
+  RescanDeltaResponse,
+} from './types'
 
 const IDLE_REFRESH_MS = 10_000
 const ACTIVE_SCAN_REFRESH_MS = 1_000
@@ -109,6 +125,7 @@ function DeltaInfo({
 }
 
 export default function App() {
+  const [page, setPage] = useState<AppPage>('search')
   const [stats, setStats] = useState<Stats | null>(null)
   const [delta, setDelta] = useState<RescanDeltaResponse | null>(null)
   const [file, setFile] = useState<File | null>(null)
@@ -268,7 +285,27 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1>MetaTrace</h1>
+        <div className="topbar-brand">
+          <h1>MetaTrace</h1>
+          <div className="topbar-nav" role="tablist" aria-label="Main pages">
+            <button
+              type="button"
+              className={`nav-btn ${page === 'search' ? 'nav-btn-active' : ''}`}
+              onClick={() => setPage('search')}
+              aria-pressed={page === 'search'}
+            >
+              Search
+            </button>
+            <button
+              type="button"
+              className={`nav-btn ${page === 'settings' ? 'nav-btn-active' : ''}`}
+              onClick={() => setPage('settings')}
+              aria-pressed={page === 'settings'}
+            >
+              Settings
+            </button>
+          </div>
+        </div>
         <div className="topbar-stats">
           {stats ? (
             <>
@@ -327,6 +364,7 @@ export default function App() {
 
       {stats?.last_report && <ScanReportLine report={stats.last_report} state={stats.state} />}
 
+      {page === 'search' ? (
       <main className="layout">
         <section className="sidebar">
           <Dropzone previewUrl={previewUrl} onFile={onFile} onClear={onClearFile} disabled={loading} />
@@ -479,6 +517,16 @@ export default function App() {
           )}
         </section>
       </main>
+      ) : (
+      <main className="settings-view">
+        <section className="settings-card">
+          <div className="settings-header">
+            <h2>Settings</h2>
+            <p className="muted">No additional settings are currently available.</p>
+          </div>
+        </section>
+      </main>
+      )}
     </div>
   )
 }

@@ -142,7 +142,7 @@ def test_initial_scan_can_use_store_snapshot_inventory(env, monkeypatch):
         "file_count": 1,
         "files": {"a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size}},
     }
-    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    s.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
 
@@ -167,7 +167,7 @@ def test_non_initial_full_scan_can_use_store_snapshot_inventory(env, monkeypatch
             "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
         },
     }
-    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    s.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
 
@@ -192,7 +192,7 @@ def test_delta_scan_uses_store_snapshot_metadata(env, monkeypatch):
             "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
         },
     }
-    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    s.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
     original_exists = indexer_mod.Path.exists
@@ -650,7 +650,7 @@ def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
             "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
         },
     }
-    settings.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    settings.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     checkpoint_path = settings.data_path / "scan_checkpoint.json"
     checkpoint_path.write_text(
@@ -743,7 +743,7 @@ def test_resume_replay_of_committed_files_does_not_duplicate(env):
             "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
         },
     }
-    settings.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    settings.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     # Stale checkpoint: b.png listed as remaining "added" work, although a
     # later chunk of the crashed run already committed+published it.

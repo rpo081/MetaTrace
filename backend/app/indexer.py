@@ -750,7 +750,7 @@ class Indexer:
     def _load_snapshot_inventory(self) -> dict[str, DiskFile] | None:
         if not self.settings.use_store_snapshot_for_initial_scan:
             return None
-        path = self.settings.store_snapshot_file
+        path = self.settings.latest_store_snapshot_file
         if not path.exists():
             return None
         try:

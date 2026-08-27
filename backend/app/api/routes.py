@@ -11,8 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
-
-from .. import db, embeddings, metadata
+from .. import db, embeddings, metadata, store_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +22,17 @@ router = APIRouter(prefix="/api")
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 _warned_trusted_lan = False
+def _snapshot_scan_root_payload(request: Request) -> dict:
+    s = request.app.state.settings
+    configured = s.snapshot_scan_root
+    default_root = str(s.default_snapshot_scan_root)
+    return {
+        "configured_root_path": str(configured) if configured is not None else None,
+        "root_path": default_root,
+        "default_root_path": default_root,
+        "uses_default": configured is None,
+        "source": "env" if configured is not None else "store_path",
+    }
 
 
 def _require_admin_token(request: Request) -> None:
@@ -74,7 +84,7 @@ def _store_file(settings, rel_path: str) -> Path:
 
 
 def _snapshot_image_count(settings, state) -> int | None:
-    path = settings.store_snapshot_file
+    path = settings.latest_store_snapshot_file
     try:
         stat = path.stat()
     except OSError:
@@ -123,6 +133,36 @@ def stats(request: Request) -> dict:
         "exiftool": metadata.exiftool_available(),
         "max_upload_mb": s.max_upload_mb,
     }
+
+
+@router.get("/settings/store-snapshot")
+def get_store_snapshot_settings(request: Request) -> dict:
+    return _snapshot_scan_root_payload(request)
+
+
+@router.post("/settings/store-snapshot/run")
+def run_store_snapshot(request: Request) -> dict:
+    _require_admin_token(request)
+    s = request.app.state.settings
+    effective = s.default_snapshot_scan_root
+    try:
+        log.info("starting store snapshot scan for %s", effective)
+        result = store_snapshot.detect_changes(
+            root_path=str(effective),
+            snapshot_file=s.baseline_snapshot_file,
+            data_folder=s.data_path,
+            allowed_extensions=s.extensions,
+            on_progress=lambda message: log.info("store snapshot: %s", message),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    log.info(
+        "finished store snapshot scan for %s in %.2fs (%d total changes)",
+        result["root_path"],
+        result["duration_sec"],
+        result["summary"]["total_changes"],
+    )
+    return result
 
 
 async def _read_upload(file: UploadFile | None, max_bytes: int) -> bytes | None:
