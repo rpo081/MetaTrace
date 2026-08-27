@@ -292,6 +292,8 @@ def test_thumb_preserves_png_alpha(client):
 
     response = client.get("/api/thumb/1")
     assert response.status_code == 200
+    thumbs = sorted(p.name for p in client.app.state.settings.thumbs_dir.glob("*.png"))
+    assert thumbs == ["1_256.png"]
     with Image.open(io.BytesIO(response.content)) as thumbnail:
         assert thumbnail.mode == "RGBA"
         assert thumbnail.getpixel((0, 0))[3] == 0

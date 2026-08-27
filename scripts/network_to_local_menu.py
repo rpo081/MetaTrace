@@ -377,6 +377,8 @@ def run_flow(settings: Settings) -> None:
         nc.run(settings.src, settings.dst)
     except KeyboardInterrupt:
         print("\nAbgebrochen.")
+    except RuntimeError as exc:
+        print(f"{sm.RED}Fehler: {exc}{sm.RESET}")
     except SystemExit as exc:
         print(f"{sm.RED}Abgebrochen: {exc}{sm.RESET}")
     sm.pause()

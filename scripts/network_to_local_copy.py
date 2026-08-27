@@ -15,7 +15,6 @@ IS_WINDOWS = os.name == "nt"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(BASE_DIR, "snapshots")
 DIFF_DIR = os.path.join(SNAPSHOT_DIR, "diffs")
-ROBOCOPY_LOG_DIR = os.path.join(SNAPSHOT_DIR, "logs")
 EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
 EXCLUDED_SCAN_PATHS = set()
 EXCLUDED_DIR_NAMES = {
@@ -28,6 +27,8 @@ MAX_FILE_SIZE_MB = 20
 EXCLUDED_DIR_LEVELS = 2
 ROBOCOPY_THREADS = 32
 ROBOCOPY_PROCESSES = 8
+PROGRESS_UPDATE_SEC = 1.0
+PROCESS_POLL_SEC = 0.2
 
 
 def longpath(p):
@@ -163,6 +164,136 @@ def format_size(num_bytes):
         value /= 1024
 
 
+def format_duration(seconds):
+    """Return a short human-readable duration string."""
+    total = max(0, int(round(seconds)))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def render_copy_progress(completed_jobs, total_jobs, completed_files, total_files, elapsed_sec):
+    """Return a single-line progress summary based on completed robocopy jobs."""
+    ratio = 1.0 if total_jobs <= 0 else min(max(completed_jobs / total_jobs, 0.0), 1.0)
+    bar_width = 20
+    filled = int(round(ratio * bar_width))
+    bar = "#" * filled + "-" * (bar_width - filled)
+    percent = int(round(ratio * 100))
+    return (
+        f"Fortschritt [{bar}] {percent:3d}% · {completed_jobs}/{total_jobs} Verzeichnis-Jobs abgeschlossen · "
+        f"{completed_files}/{total_files} Dateien in fertigen Jobs · "
+        f"Laufzeit {format_duration(elapsed_sec)}"
+    )
+
+
+def render_copy_dashboard(progress_line, pending_jobs, total_jobs, elapsed_sec, target_root=None):
+    """Return a small stable dashboard for interactive copy progress."""
+    rows = [
+        "Kopiervorgang läuft ...",
+        progress_line,
+        f"Robocopy-Jobs aktiv: {total_jobs - pending_jobs}/{total_jobs} abgeschlossen · Laufzeit {format_duration(elapsed_sec)}",
+    ]
+    if target_root:
+        rows.insert(1, f"Ziel: {target_root}")
+    return rows
+
+
+def build_copy_preview_rows(
+    source_root,
+    target_root,
+    scan_duration,
+    scanned_files,
+    changed_files,
+    deleted_files,
+    image_files,
+    filtered_count,
+    oversized_count,
+    existing_count,
+    copy_count,
+    copy_bytes,
+):
+    """Return a cleanup-report-style summary shown before copy confirmation."""
+    return [
+        "",
+        "MetaTrace Network Copy Preview",
+        "=" * 60,
+        f"Source:      {source_root}",
+        f"Target:      {target_root}",
+        f"Scanned:     {scanned_files:,} files in {scan_duration:.1f}s",
+        "",
+        "CHANGE SUMMARY",
+        "-" * 60,
+        f"New/changed: {changed_files:,}",
+        f"Deleted:     {deleted_files:,}",
+        f"Image files: {image_files:,}",
+        "",
+        "COPY FILTERS",
+        "-" * 60,
+        f"Folder/sequence excluded: {filtered_count:,}",
+        f"Oversized excluded:       {oversized_count:,}",
+        f"Already at target:        {existing_count:,}",
+        "",
+        "COPY PLAN",
+        "-" * 60,
+        f"To copy:     {copy_count:,} files ({format_size(copy_bytes)})",
+        "",
+    ]
+
+
+def build_robocopy_command(source_directory, target_directory, filenames):
+    """Return the robocopy command used for one directory batch."""
+    return [
+        "robocopy",
+        robocopy_path(source_directory),
+        robocopy_path(target_directory),
+        *sorted(filenames),
+        f"/MT:{ROBOCOPY_THREADS}",
+        "/COPY:DAT",
+        "/DCOPY:DA",
+        "/FFT",
+        "/J",
+        "/XJ",
+        "/R:1",
+        "/W:1",
+        "/NP",
+        "/NFL",
+        "/NDL",
+        "/NJH",
+        "/NJS",
+    ]
+
+
+def write_status_line(line, previous_width=0, stream=None):
+    """Rewrite one terminal status line in place and return its visible width."""
+    out = sys.stdout if stream is None else stream
+    padding = max(0, previous_width - len(line))
+    out.write("\r" + line + (" " * padding))
+    out.flush()
+    return len(line)
+
+
+def clear_status_line(previous_width, stream=None):
+    """Clear a previously written terminal status line."""
+    if previous_width <= 0:
+        return
+    out = sys.stdout if stream is None else stream
+    out.write("\r" + (" " * previous_width) + "\r")
+    out.flush()
+
+
+def draw_progress_frame(lines, stream=None):
+    """Redraw a compact full-screen progress frame for TTY terminals."""
+    out = sys.stdout if stream is None else stream
+    out.write("\x1b[H\x1b[2J\x1b[H")
+    for line in lines:
+        out.write(line + "\n")
+    out.flush()
+
+
 def below_excluded_dir(path, root):
     """Return whether one of the lowest folder levels is excluded by name."""
     relative_dir = os.path.dirname(os.path.relpath(path, root))
@@ -252,56 +383,104 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
     if not paths_by_directory:
         return 0
 
-    def copy_directory(source_directory, filenames):
+    def start_copy_process(source_directory, filenames):
         relative_directory = os.path.relpath(source_directory, source_root)
         target_directory = os.path.join(target_root, relative_directory)
-        log_name = hashlib.blake2s(
-            source_directory.casefold().encode("utf-8"), digest_size=8
-        ).hexdigest()
-        log_path = os.path.join(ROBOCOPY_LOG_DIR, f"robocopy_{log_name}.log")
-        os.makedirs(ROBOCOPY_LOG_DIR, exist_ok=True)
-        command = [
-            "robocopy",
-            robocopy_path(source_directory),
-            robocopy_path(target_directory),
-            *sorted(filenames),
-            f"/MT:{ROBOCOPY_THREADS}",
-            "/COPY:DAT",
-            "/DCOPY:DA",
-            "/FFT",
-            "/J",
-            "/XJ",
-            "/R:1",
-            "/W:1",
-            "/NP",
-            "/NFL",
-            "/NDL",
-            "/NJH",
-            "/NJS",
-            "/TEE",
-            f"/LOG:{log_path}",
-        ]
-        result = subprocess.run(
+        command = build_robocopy_command(source_directory, target_directory, filenames)
+        process = subprocess.Popen(
             command,
-            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        if result.returncode >= 8:
-            raise RuntimeError(
-                f"robocopy fehlgeschlagen für {source_directory} "
-                f"(Exit-Code {result.returncode}); Log: {log_path}"
-            )
+        return process, source_directory, len(filenames)
 
     file_count = sum(len(filenames) for filenames in paths_by_directory.values())
-    print(f"Kopiere {file_count} geänderte Dateien nach {target_root} ...")
-    with ThreadPoolExecutor(
-        max_workers=min(ROBOCOPY_PROCESSES, len(paths_by_directory))
-    ) as executor:
-        futures = [
-            executor.submit(copy_directory, source_directory, filenames)
-            for source_directory, filenames in paths_by_directory.items()
-        ]
-        for future in futures:
-            future.result()
+    interactive_frame = sys.stdout.isatty()
+    if interactive_frame:
+        draw_progress_frame(
+            render_copy_dashboard(
+                render_copy_progress(0, len(paths_by_directory), 0, file_count, 0.001),
+                len(paths_by_directory),
+                len(paths_by_directory),
+                0,
+                target_root=target_root,
+            )
+        )
+    else:
+        print(f"Kopiere {file_count} geänderte Dateien nach {target_root} ...")
+    batches = list(paths_by_directory.items())
+    max_processes = min(ROBOCOPY_PROCESSES, len(batches))
+    active = []
+    started = time.perf_counter()
+    last_progress = started
+    progress_width = 0
+    total_jobs = len(batches)
+    completed_jobs = 0
+    completed_files = 0
+    progress_line = render_copy_progress(0, total_jobs, 0, file_count, 0.001)
+    while batches or active:
+        while batches and len(active) < max_processes:
+            source_directory, filenames = batches.pop()
+            active.append(start_copy_process(source_directory, filenames))
+
+        still_running = []
+        for process, source_directory, job_file_count in active:
+            returncode = process.poll()
+            if returncode is None:
+                still_running.append((process, source_directory, job_file_count))
+                continue
+            completed_jobs += 1
+            completed_files += job_file_count
+            if returncode >= 8:
+                raise RuntimeError(
+                    f"robocopy fehlgeschlagen für {source_directory} "
+                    f"(Exit-Code {returncode})"
+                )
+        active = still_running
+
+        now = time.perf_counter()
+        should_refresh = (now - last_progress) >= PROGRESS_UPDATE_SEC or not active
+        if should_refresh:
+            progress_line = render_copy_progress(
+                completed_jobs,
+                total_jobs,
+                completed_files,
+                file_count,
+                max(now - started, 0.001),
+            )
+            if interactive_frame:
+                draw_progress_frame(
+                    render_copy_dashboard(
+                        progress_line,
+                        total_jobs - completed_jobs,
+                        total_jobs,
+                        now - started,
+                        target_root=target_root,
+                    )
+                )
+            else:
+                progress_width = write_status_line(
+                    progress_line,
+                    previous_width=progress_width,
+                )
+            last_progress = now
+
+        if active:
+            time.sleep(PROCESS_POLL_SEC)
+
+    if interactive_frame:
+        draw_progress_frame(
+            render_copy_dashboard(
+                progress_line,
+                0,
+                total_jobs,
+                max(time.perf_counter() - started, 0.001),
+                target_root=target_root,
+            )
+        )
+    elif progress_width:
+        clear_status_line(progress_width)
+        print(progress_line)
     return file_count
 
 
@@ -347,6 +526,7 @@ def run(source_root, target_root):
         if base is None:
             print("Snapshot-Konfiguration geändert: Basis-Snapshot wird neu aufgebaut")
             changed = new
+            deleted = []
         else:
             changed, deleted = diff_snapshots(base, new)
             print(f"{len(changed)} neu/geaendert, {len(deleted)} geloescht")
@@ -364,6 +544,7 @@ def run(source_root, target_root):
     else:
         print("Erster Lauf: Basis-Snapshot wird erstellt")
         changed = new
+        deleted = []
 
     save_snapshot(new, snapshot_file, source_root, excluded_scan_paths)
     print(f"Snapshot gespeichert: {snapshot_file}")
@@ -389,16 +570,22 @@ def run(source_root, target_root):
     copy_paths, existing_count = filter_existing_target_files(
         copy_paths, source_root, target_root, new
     )
-    print(f"{existing_count} Dateien wegen vorhandenem Zielbestand ausgeschlossen.")
     copy_bytes = sum(changed[path][1] for path in copy_paths)
-    print(
-        f"{filtered_count} von {len(image_paths)} Bildern durch Ordner- und "
-        f"Sequenzfilter ausgeschlossen, {len(oversized)} durch den Größenfilter."
-    )
-    print(
-        f"Es sollen {len(copy_paths)} geänderte Dateien "
-        f"({format_size(copy_bytes)}) nach {target_root} kopiert werden."
-    )
+    for row in build_copy_preview_rows(
+        source_root,
+        target_root,
+        dt,
+        len(new),
+        len(changed),
+        len(deleted),
+        len(image_paths),
+        filtered_count,
+        len(oversized),
+        existing_count,
+        len(copy_paths),
+        copy_bytes,
+    ):
+        print(row)
     confirmation = input("Kopiervorgang starten? [j/N]: ").strip().casefold()
     if confirmation not in {"j", "ja", "y", "yes"}:
         print("Kopiervorgang abgebrochen.")

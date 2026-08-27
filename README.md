@@ -5,7 +5,7 @@ its metadata: original network path and embedded XMP tags. Matches cover exact
 byte-identical copies, resized/re-encoded variants, and visually similar images.
 
 ```
-CIFS share (network) ──scripts/sync_images.py──> local SSD store ──indexer──> SQLite + FAISS
+CIFS share (network) ──scripts/network_to_local_copy.py──> local SSD store ──indexer──> SQLite + FAISS
                                                                                    ▲
 React UI (drag & drop) ──> FastAPI  /api/search  (upload → CLIP embed → top-K) ────┘
 ```
@@ -14,8 +14,11 @@ React UI (drag & drop) ──> FastAPI  /api/search  (upload → CLIP embed → 
   `DEVICE=auto` with CUDA when available) + FAISS flat inner-product index in RAM
   + SQLite metadata.
 - **Frontend**: Vite + React + TS; served as static files by the same container.
-- **Sync**: `scripts/sync_images.py` mirrors the CIFS share to local SSD
-  (incremental, long-path safe, Windows-first).
+- **Mirror / Sync**: `scripts/network_to_local_menu.py` is the preferred
+  Windows UI for maintaining the local SSD mirror; it drives
+  `scripts/network_to_local_copy.py` (incremental, long-path safe, robocopy-based).
+  The older `scripts/sync_images.py` / `scripts/sync_menu.py` pair is still in
+  the repo for the legacy mode-based workflow.
 
 ## Quickstart (Docker)
 
@@ -64,7 +67,39 @@ Both tags (`:v0.1.0` and `:latest`) are pushed as one multi-arch manifest.
 The foreign platform is cross-built under QEMU — first build of the torch and
 CLIP weight layers is slow, later builds hit the layer cache.
 
-## Syncing from the network share
+## Network mirror workflow
+
+Preferred Windows workflow:
+
+```powershell
+python scripts\network_to_local_menu.py
+```
+
+`network_to_local_menu.py` persists presets in `~/.metatrace_network_copy.json`
+and lets you configure:
+
+- source and destination folders
+- excluded folder depth
+- excluded source-relative paths
+- excluded folder names
+- allowed image extensions
+- maximum file size
+
+Before copying, the tool prints a cleanup-style summary of detected changes and
+the filtered copy set. During transfer it shows a robocopy-job-based progress
+display in the terminal.
+
+For direct CLI usage, the underlying copy script is:
+
+```powershell
+python scripts\network_to_local_copy.py "D:\imagestore" --source "\\nas\share\renderings"
+```
+
+It keeps a per-share snapshot under `scripts/snapshots/`, detects
+new/changed/deleted files, applies the configured filters, and copies only the
+remaining image files.
+
+## Legacy sync workflow
 
 ```powershell
 python scripts\sync_images.py "\\nas\share\renderings" "D:\imagestore" --mode final --threads 8
@@ -136,13 +171,15 @@ into the image.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/search?k=24&min_score=0.1` | multipart `file` upload → ranked results |
-| `GET /api/thumb/{id}?size=512` | cached PNG thumbnail (64–1024 px, alpha preserved) |
+| `GET /api/thumb/{id}?size=256` | cached PNG thumbnail (default 256 px; accepts 64–1024 px, alpha preserved) |
 | `GET /api/file/{id}` | original file stream |
 | `POST /api/rescan?rebuild=false&use_delta=true` | trigger scan; uses delta changes when available unless `rebuild=true` |
 | `POST /api/rescan/pause` | request pause for the running scan at the next checkpoint |
 | `POST /api/rescan/resume` | resume a paused scan, including persisted checkpoints after restart |
 | `GET /api/stats` | index/db counts, scan state/report (`seen`, `processed`, etc.), `inventory_source`, model, exiftool status |
 | `GET /api/rescan-delta` | show the latest prepared delta summary, if present |
+| `GET /api/settings/store-snapshot` | return the effective root used by store-snapshot scans |
+| `POST /api/settings/store-snapshot/run` | run a store snapshot scan and refresh `data/store_snapshot_latest.json` |
 | `GET /api/health` | liveness |
 
 Search response: `score` = cosine similarity (exact sha256 hits are pinned to
@@ -205,10 +242,10 @@ Environment variables (or `.env`, see `.env.example`):
 | `METATRACE_MAX_PIXELS` | `100000000` | hard pixel cap for PSD composite rendering (OOM/decompression-bomb guard) |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |
 | `USE_STORE_SNAPSHOT_FOR_INITIAL_SCAN` | `true` | prefer `data/store_snapshot_latest.json` over a filesystem walk when building scan inventory |
-| `METATRACE_SNAPSHOT_SCAN_ROOT` | — | optional override for the settings-page snapshot scan root; defaults to the effective image store |
+| `METATRACE_SNAPSHOT_SCAN_ROOT` | — | optional override for `POST /api/settings/store-snapshot/run`; defaults to the effective image store |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `24` / `200` | result count limits |
 | `MIN_SCORE_DEFAULT` | `0.0` | default cosine cutoff |
-| `THUMB_SIZE` | `512` | default thumbnail max side |
+| `THUMB_SIZE` | `256` | default thumbnail max side for result-grid thumbnails |
 | `MAX_UPLOAD_MB` | `64` | query upload limit (streamed, early-abort) |
 | `ALLOWED_EXTENSIONS` | `.psd,.jpg,.jpeg,.png,.tif,.tiff` | indexed formats |
 | `METATRACE_ADMIN_TOKEN` | — | require `X-Admin-Token` on mutating rescan endpoints; empty = trusted-LAN mode |
@@ -220,9 +257,10 @@ Environment variables (or `.env`, see `.env.example`):
 - Embedding can use CUDA (`DEVICE=auto`) when NVIDIA GPU passthrough is enabled.
 - Rescan time is often dominated by filesystem inventory/stat calls on large
   bind mounts; GPU helps embedding work, not full-tree metadata walks.
-- `scripts/store_snapshot.py` also writes `data/store_snapshot_latest.json`;
-  full scans prefer that snapshot inventory when available, including restart
-  resume paths, to avoid unnecessary filesystem walks.
+- `scripts/store_snapshot.py` writes the baseline snapshot to
+  `data/store_snapshot.json` and refreshes `data/store_snapshot_latest.json`.
+  Initial/full scans prefer the `latest` snapshot inventory when available to
+  avoid unnecessary filesystem walks.
 - `BATCH_SIZE` trades throughput against responsiveness: larger batches reduce
   embedding overhead but increase RAM use, pause latency, and redo work after
   an unclean stop inside a batch.
@@ -240,7 +278,7 @@ Environment variables (or `.env`, see `.env.example`):
   published periodically (`PUBLISH_INTERVAL_SEC`). On CUDA, embedding runs in
   fp16 autocast (float32 output) with TF32 matmuls enabled.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
-- Thumbnails are generated once per `(id, size)` and served from disk cache.
+- Thumbnails are generated once per `(id, size)` and served from disk cache. The UI currently uses 256 px for result cards and 512 px for the detail panel.
 
 ## Implementation notes & trade-offs
 

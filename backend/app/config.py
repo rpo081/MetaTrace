@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     default_top_k: int = 24
     max_top_k: int = 200
     min_score_default: float = 0.0
-    thumb_size: int = 512
+    thumb_size: int = 256
     max_upload_mb: int = 64
 
     allowed_extensions: str = ".psd,.jpg,.jpeg,.png,.tif,.tiff"

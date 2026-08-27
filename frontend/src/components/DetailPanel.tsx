@@ -22,7 +22,7 @@ function fmtValue(v: unknown): string {
 
 function detailThumbnailUrl(thumbUrl: string): string {
   const url = new URL(thumbUrl, window.location.origin)
-  url.searchParams.set('size', '1024')
+  url.searchParams.set('size', '512')
   return `${url.pathname}${url.search}`
 }
 

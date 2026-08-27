@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from network_menu_module import load_network_menu_module
 from network_copy_module import load_network_copy_module
@@ -58,3 +59,20 @@ def test_clean_extension_normalizes_and_rejects():
     assert menu.clean_extension("webp") == ".webp"
     assert menu.clean_extension(".a/b") is None
     assert menu.clean_extension("") is None
+
+
+def test_run_flow_reports_runtime_error_and_pauses(monkeypatch, capsys, tmp_path):
+    paused = {"called": False}
+    settings = menu.Settings(src=r"\\x\y", dst=str(tmp_path), extensions=[".png"])
+
+    monkeypatch.setattr(menu.sm, "is_accessible_directory", lambda path: True)
+    monkeypatch.setattr(menu, "apply_settings", lambda settings: None)
+    monkeypatch.setattr(menu.sm, "clear_screen", lambda: None)
+    monkeypatch.setattr(menu.sm, "pause", lambda: paused.__setitem__("called", True))
+    monkeypatch.setattr(menu.nc, "run", lambda src, dst: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    menu.run_flow(settings)
+
+    out = capsys.readouterr().out
+    assert "Fehler: boom" in out
+    assert paused["called"] is True
