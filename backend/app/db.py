@@ -219,6 +219,35 @@ def row_to_result(row: sqlite3.Row) -> dict:
     }
 
 
+def update_original_paths(db_path: Path, old_root: str, new_root: str) -> int:
+    """Replace *old_root* prefix with *new_root* in every original_path.
+
+    Returns the number of rows affected.  Only touches rows whose
+    original_path starts with ``old_root\\`` and does NOT already start with
+    ``new_root\\`` (idempotent).  Trailing path separators on both roots are
+    stripped before comparison so ``\\nas\\share`` and ``\\nas\\share\\``
+    are treated identically.
+    """
+    if not old_root or not new_root or old_root == new_root:
+        return 0
+    old = old_root.rstrip("/\\")
+    new = new_root.rstrip("/\\")
+    sep = chr(92)  # backslash
+    old_with_sep = old + sep
+    new_with_sep = new + sep
+    with closing(connect(db_path)) as conn, conn:
+        cursor = conn.execute(
+            """
+            UPDATE images
+            SET original_path = ? || SUBSTR(original_path, LENGTH(?) + 1)
+            WHERE SUBSTR(original_path, 1, LENGTH(?) + 1) = ?
+              AND SUBSTR(original_path, 1, LENGTH(?) + 1) != ?
+            """,
+            (new, old, old, old_with_sep, new, new_with_sep),
+        )
+    return cursor.rowcount
+
+
 def escape_like(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 

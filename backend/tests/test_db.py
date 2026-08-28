@@ -118,3 +118,82 @@ def test_init_db_disables_wal_churn_for_short_read_connections(tmp_path):
     db.kv_get(p, "last_scan")
     assert not p.with_suffix(".db-wal").exists()
     assert not p.with_suffix(".db-shm").exists()
+
+
+def test_update_original_paths(tmp_path):
+    p = tmp_path / "update.db"
+    db.init_db(p)
+    db.upsert_image(p, rel_path="a/x.png", original_path=r"\\nas\share\a\x.png",
+                     size=10, mtime=1.0, sha256=None, width=None, height=None, xmp={})
+    db.upsert_image(p, rel_path="b/y.jpg", original_path=r"\\nas\share\b\y.jpg",
+                     size=20, mtime=2.0, sha256=None, width=None, height=None, xmp={})
+    db.upsert_image(p, rel_path="c/z.png", original_path=r"\\other\share\c\z.png",
+                     size=5, mtime=3.0, sha256=None, width=None, height=None, xmp={})
+
+    n = db.update_original_paths(p, r"\\nas\share", r"\\nas\newshare")
+    assert n == 2  # only the two \\nas\share rows
+
+    conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    r1 = conn.execute("SELECT original_path FROM images WHERE rel_path = 'a/x.png'").fetchone()
+    r2 = conn.execute("SELECT original_path FROM images WHERE rel_path = 'b/y.jpg'").fetchone()
+    r3 = conn.execute("SELECT original_path FROM images WHERE rel_path = 'c/z.png'").fetchone()
+    conn.close()
+
+    assert r1["original_path"] == r"\\nas\newshare\a\x.png"
+    assert r2["original_path"] == r"\\nas\newshare\b\y.jpg"
+    assert r3["original_path"] == r"\\other\share\c\z.png"  # untouched
+
+
+def test_update_original_paths_idempotent(tmp_path):
+    p = tmp_path / "idemp.db"
+    db.init_db(p)
+    db.upsert_image(p, rel_path="a/x.png", original_path=r"\\nas\newshare\a\x.png",
+                     size=10, mtime=1.0, sha256=None, width=None, height=None, xmp={})
+
+    # Already has the new root — should be no-op
+    n = db.update_original_paths(p, r"\\nas\share", r"\\nas\newshare")
+    assert n == 0
+
+    conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    r = conn.execute("SELECT original_path FROM images WHERE rel_path = 'a/x.png'").fetchone()
+    conn.close()
+    assert r["original_path"] == r"\\nas\newshare\a\x.png"
+
+
+def test_update_original_paths_same_root_noop(tmp_path):
+    p = tmp_path / "noop.db"
+    db.init_db(p)
+    db.upsert_image(p, rel_path="a/x.png", original_path=r"\\nas\share\a\x.png",
+                     size=10, mtime=1.0, sha256=None, width=None, height=None, xmp={})
+
+    n = db.update_original_paths(p, r"\\nas\share", r"\\nas\share")
+    assert n == 0
+
+
+def test_update_original_paths_empty_roots(tmp_path):
+    p = tmp_path / "empty.db"
+    db.init_db(p)
+    db.upsert_image(p, rel_path="a/x.png", original_path="x.png",
+                     size=10, mtime=1.0, sha256=None, width=None, height=None, xmp={})
+
+    assert db.update_original_paths(p, "", r"\\nas\share") == 0
+    assert db.update_original_paths(p, r"\\nas\share", "") == 0
+
+
+def test_update_original_paths_trailing_separator(tmp_path):
+    p = tmp_path / "trail.db"
+    db.init_db(p)
+    db.upsert_image(p, rel_path="a/x.png", original_path=r"\\nas\share\a\x.png",
+                     size=10, mtime=1.0, sha256=None, width=None, height=None, xmp={})
+
+    # Trailing backslash on old_root should be stripped and still match
+    n = db.update_original_paths(p, r"\\nas\share" + "\\", r"\\nas\newshare" + "\\")
+    assert n == 1
+
+    conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    r = conn.execute("SELECT original_path FROM images WHERE rel_path = 'a/x.png'").fetchone()
+    conn.close()
+    assert r["original_path"] == r"\\nas\newshare\a\x.png"

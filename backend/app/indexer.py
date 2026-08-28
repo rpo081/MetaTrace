@@ -782,6 +782,20 @@ class Indexer:
         self._set_inventory_source("snapshot")
         return disk
 
+    def _sync_network_root(self) -> None:
+        """Update original_path prefixes when network_root has changed."""
+        s = self.settings
+        new_root = s.network_root or ""
+        old_root = db.kv_get(s.db_path, "network_root") or ""
+        if new_root == old_root:
+            return
+        if old_root and new_root:
+            n = db.update_original_paths(s.db_path, old_root, new_root)
+            if n:
+                log.info("network_root changed %r -> %r; updated %d original_path rows",
+                         old_root, new_root, n)
+        db.kv_set(s.db_path, "network_root", new_root)
+
     def _scan(self, report: ScanReport, force_rebuild: bool, progress) -> None:
         s = self.settings
         db.init_db(s.db_path, configure_journal=False)
@@ -846,6 +860,7 @@ class Indexer:
         )
 
         self._publish_index(working)
+        self._sync_network_root()
         db.kv_set(s.db_path, "last_scan", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         log.info(
             "scan done (%s): seen=%d added=%d updated=%d removed=%d failed=%d in %.1fs",
@@ -948,6 +963,7 @@ class Indexer:
 
         # === STEP 3: Publish updated index ===
         self._publish_index(working)
+        self._sync_network_root()
         log.info("published index to self.index, new ntotal=%d", (working.ntotal if working else 0))
         
         db.kv_set(s.db_path, "last_scan", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
