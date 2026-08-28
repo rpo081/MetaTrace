@@ -196,6 +196,7 @@ def choose(
     options: list[str],
     preamble: list[str] | None = None,
     framed: bool = False,
+    frame_width: int | None = None,
 ) -> int | None:
     """Render an arrow-key selectable list; return index, or None on Esc."""
     selected = 0
@@ -207,11 +208,11 @@ def choose(
                 rows = [*(preamble or []), f"{BOLD}{title}{RESET}", hint]
                 for index, option in enumerate(options):
                     if index == selected:
-                        rows.append(f"{CYAN}{BOLD}>{RESET} {BOLD}{option}{RESET}")
+                        rows.append(f"{CYAN}{BOLD}> {option}{RESET}")
                     else:
                         rows.append(f"  {option}")
                 if framed:
-                    rows = framed_rows(rows)
+                    rows = framed_rows(rows, width=frame_width)
                 clear_screen()
                 for row in rows:
                     sys.stdout.write("\r\x1b[2K" + row + "\n")
@@ -255,7 +256,11 @@ def list_subdirectories(path: Path) -> list[str]:
     return sorted(names, key=str.casefold)
 
 
-def browse_folder(title: str, start: str) -> str | object | None:
+def browse_folder(
+    title: str,
+    start: str,
+    frame_width: int | None = None,
+) -> str | object | None:
     """Cursor-driven directory browser.
 
     Returns the selected path, MANUAL_INPUT for typed entry, or None on Esc.
@@ -282,11 +287,11 @@ def browse_folder(title: str, start: str) -> str | object | None:
                     f"{DIM}Pfad: {RESET}{shorten(str(current), 64)}",
                 ]
                 if sel == 0:
-                    rows.append(f"{CYAN}{BOLD}>{RESET} {BOLD}[ Diesen Ordner wählen ]{RESET}")
+                    rows.append(f"{CYAN}{BOLD}> [ Diesen Ordner wählen ]{RESET}")
                 else:
                     rows.append("  [ Diesen Ordner wählen ]")
                 if sel == 1:
-                    rows.append(f"{CYAN}{BOLD}>{RESET} {BOLD}[ Pfad manuell eingeben … ]{RESET}")
+                    rows.append(f"{CYAN}{BOLD}> [ Pfad manuell eingeben … ]{RESET}")
                 else:
                     rows.append(f"  {DIM}[ Pfad manuell eingeben … ]{RESET}")
                 for offset, item in enumerate(view):
@@ -294,11 +299,11 @@ def browse_folder(title: str, start: str) -> str | object | None:
                     if not item:
                         rows.append("")
                     elif index == sel:
-                        rows.append(f"{CYAN}{BOLD}>{RESET} {BOLD}{item}{RESET}")
+                        rows.append(f"{CYAN}{BOLD}> {item}{RESET}")
                     else:
                         rows.append(f"  {item}")
                 rows.append(truncated)
-                rows = framed_rows(rows)
+                rows = framed_rows(rows, width=frame_width)
                 clear_screen()
                 for row in rows:
                     sys.stdout.write("\r\x1b[2K" + row + "\n")
@@ -333,9 +338,9 @@ def browse_folder(title: str, start: str) -> str | object | None:
             sys.stdout.flush()
 
 
-def pick_folder(title: str, current: str) -> str:
+def pick_folder(title: str, current: str, frame_width: int | None = None) -> str:
     """Browse first; fall back to typed entry via the manual option."""
-    picked = browse_folder(title, current)
+    picked = browse_folder(title, current, frame_width=frame_width)
     if picked is None:
         return current
     if picked is MANUAL_INPUT:
