@@ -488,3 +488,111 @@ def test_startup_cleans_orphaned_thumb_temps(tmp_path, monkeypatch):
     assert keep.exists()
     assert not any(p.exists() for p in orphans)
     app.state.scheduler.stop()
+
+
+# ---------- browse images ----------
+
+
+def test_browse_images_default(client):
+    """GET /api/images returns results with default params."""
+    r = client.get("/api/images")
+    assert r.status_code == 200
+    body = r.json()
+    assert "items" in body
+    assert "total" in body
+    assert "offset" in body
+    assert "limit" in body
+    assert "has_more" in body
+    assert body["total"] >= 1
+    assert len(body["items"]) >= 1
+    item = body["items"][0]
+    for key in ("id", "rel_path", "original_path", "width", "height",
+                "xmp", "size", "mtime", "sha256", "indexed_at",
+                "thumb_url", "file_url"):
+        assert key in item
+    assert item["thumb_url"].startswith("/api/thumb/")
+    assert item["file_url"].startswith("/api/file/")
+
+
+def test_browse_images_pagination(client):
+    """offset and limit control pagination."""
+    r_all = client.get("/api/images", params={"offset": 0, "limit": 100})
+    total = r_all.json()["total"]
+    assert total >= 1
+
+    r_p1 = client.get("/api/images", params={"offset": 0, "limit": 1})
+    assert r_p1.status_code == 200
+    body_p1 = r_p1.json()
+    assert len(body_p1["items"]) == 1
+    assert body_p1["total"] == total
+    assert body_p1["offset"] == 0
+    assert body_p1["has_more"] is (total > 1)
+
+    # When requesting beyond total, should get empty items
+    r_past = client.get("/api/images", params={"offset": total, "limit": 10})
+    assert r_past.status_code == 200
+    body_past = r_past.json()
+    assert len(body_past["items"]) == 0
+    assert body_past["has_more"] is False
+
+
+def test_browse_images_filters_ext(client):
+    """ext filter restricts results to matching extension."""
+    r = client.get("/api/images", params={"ext": ".png"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] >= 1
+    for item in body["items"]:
+        assert item["rel_path"].lower().endswith(".png")
+
+    r_none = client.get("/api/images", params={"ext": ".xyz"})
+    assert r_none.status_code == 200
+    assert r_none.json()["total"] == 0
+
+
+def test_browse_images_filters_size(client):
+    """size_min/size_max filter correctly constrains results."""
+    r_min = client.get("/api/images", params={"size_min": 0})
+    assert r_min.status_code == 200
+    assert r_min.json()["total"] >= 1
+
+    r_big = client.get("/api/images", params={"size_min": 999999999})
+    assert r_big.status_code == 200
+    assert r_big.json()["total"] == 0
+
+
+def test_browse_images_filters_folder(client):
+    """folder filter uses LIKE prefix match."""
+    # Get a known rel_path prefix
+    r_all = client.get("/api/images", params={"limit": 1})
+    assert r_all.status_code == 200
+    items = r_all.json()["items"]
+    if items:
+        # Use the filename part (no folder) — should still match
+        rel = items[0]["rel_path"]
+        folder = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        if folder:
+            r = client.get("/api/images", params={"folder": folder})
+            assert r.status_code == 200
+            assert r.json()["total"] >= 1
+            for item in r.json()["items"]:
+                assert item["rel_path"].startswith(folder)
+
+    r_nope = client.get("/api/images", params={"folder": "nonexistent/path/xyz"})
+    assert r_nope.status_code == 200
+    assert r_nope.json()["total"] == 0
+
+
+def test_browse_images_sort_validation(client):
+    """Invalid sort column returns 400."""
+    r = client.get("/api/images", params={"sort": "evil_column"})
+    assert r.status_code == 400
+    assert "invalid sort" in r.json()["detail"].lower()
+
+
+def test_browse_images_limit_capped(client):
+    """Limit is capped by max_browse_limit."""
+    r = client.get("/api/images", params={"limit": 99999})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["limit"] == client.app.state.settings.max_browse_limit

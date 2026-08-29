@@ -1,4 +1,8 @@
 import type {
+  BrowseFilters,
+  BrowseResponse,
+  BrowseSort,
+  BrowseOrder,
   SearchCombineMode,
   SearchResponse,
   Stats,
@@ -18,6 +22,29 @@ export class ApiError extends Error {
   }
 }
 
+/** Map HTTP status codes to user-friendly messages. */
+const STATUS_MESSAGES: Record<number, string> = {
+  400: 'Invalid request. Please check your input and try again.',
+  401: 'Authentication required. Please check your admin token.',
+  403: 'Access denied. You do not have permission for this action.',
+  404: 'Resource not found.',
+  409: 'A scan is already running. Please wait for it to finish.',
+  413: 'The file is too large. Please use a smaller image.',
+  422: 'Invalid parameters. Please check your input.',
+  429: 'Too many requests. Please wait a moment and try again.',
+  500: 'Server error. Please try again later.',
+  502: 'Server is temporarily unavailable. Please try again later.',
+  503: 'Service is currently unavailable. Please try again later.',
+}
+
+/** Return a user-friendly message for the HTTP status, falling back to the raw detail. */
+function friendlyErrorMessage(status: number, detail: string): string {
+  const mapped = STATUS_MESSAGES[status]
+  if (mapped) return mapped
+  if (status >= 500) return 'Server error. Please try again later.'
+  return detail
+}
+
 async function parseError(res: Response): Promise<never> {
   let detail = `${res.status} ${res.statusText}`
   try {
@@ -26,7 +53,7 @@ async function parseError(res: Response): Promise<never> {
   } catch {
     /* keep status text */
   }
-  throw new ApiError(res.status, detail)
+  throw new ApiError(res.status, friendlyErrorMessage(res.status, detail))
 }
 
 export async function searchImage(
@@ -121,6 +148,36 @@ export async function runStoreSnapshot(): Promise<StoreSnapshotRunResult> {
     method: 'POST',
     headers,
   })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+
+export interface BrowseParams {
+  offset?: number
+  limit?: number
+  sort?: BrowseSort
+  order?: BrowseOrder
+  filters?: BrowseFilters
+}
+
+export async function browseImages(
+  params: BrowseParams,
+  signal?: AbortSignal,
+): Promise<BrowseResponse> {
+  const sp = new URLSearchParams()
+  const p: Record<string, string | number | boolean | undefined> = {
+    offset: params.offset,
+    limit: params.limit,
+    sort: params.sort,
+    order: params.order,
+    ...params.filters,
+  }
+  for (const [k, v] of Object.entries(p)) {
+    if (v !== undefined && v !== null && v !== '') {
+      sp.set(k, String(v))
+    }
+  }
+  const res = await fetch(`/api/images?${sp.toString()}`, { signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }

@@ -19,7 +19,51 @@ export interface SearchResponse {
 }
 
 export type SearchCombineMode = 'and' | 'or'
-export type AppPage = 'search' | 'settings'
+export type AppPage = 'search' | 'settings' | 'browse'
+
+export type ViewMode = 'grid' | 'list'
+export type BrowseSort = 'indexed_at' | 'mtime' | 'size' | 'rel_path' | 'width' | 'height' | 'id'
+export type BrowseOrder = 'asc' | 'desc'
+
+export interface BrowseImage {
+  id: number
+  rel_path: string
+  original_path: string
+  size: number
+  mtime: number
+  sha256: string | null
+  width: number | null
+  height: number | null
+  xmp: Record<string, unknown>
+  indexed_at: string
+  thumb_url: string
+  file_url: string
+}
+
+export interface BrowseFilters {
+  q?: string
+  ext?: string
+  folder?: string
+  size_min?: number
+  size_max?: number
+  width_min?: number
+  width_max?: number
+  height_min?: number
+  height_max?: number
+  indexed_from?: string
+  indexed_to?: string
+  mtime_from?: number
+  mtime_to?: number
+  has_xmp?: boolean
+}
+
+export interface BrowseResponse {
+  items: BrowseImage[]
+  total: number
+  offset: number
+  limit: number
+  has_more: boolean
+}
 
 export interface ScanReport {
   trigger: string

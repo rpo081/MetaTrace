@@ -10,7 +10,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from limits import parse as parse_limit
 from PIL import Image, ImageOps, UnidentifiedImageError
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from slowapi.wrappers import Limit
 from .. import db, embeddings, metadata, store_snapshot
 
 log = logging.getLogger(__name__)
@@ -22,6 +26,47 @@ router = APIRouter(prefix="/api")
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 _warned_trusted_lan = False
+
+
+def _check_rate_limit(request: Request, limit_str: str, scope_key: str | None = None) -> None:
+    """Enforce a rate limit against the client IP via slowapi's underlying limiter.
+
+    Raises ``RateLimitExceeded`` if the limit is exceeded.
+
+    ``_limiter`` lives on ``app.state`` rather than being imported at module
+    level because slowapi initialises it lazily (it needs a reference to the
+    FastAPI app) — at import time it does not exist yet.
+
+    Args:
+        request: The incoming FastAPI request.
+        limit_str: Rate limit string understood by :func:`limits.parse`
+                   (e.g. ``"30/minute"``).
+        scope_key: Optional override for the rate-limit scope key.  When
+                   *None* the client IP address is used (the default).
+    """
+    limiter = request.app.state.limiter
+    item = parse_limit(limit_str)
+    key = scope_key if scope_key is not None else get_remote_address(request)
+    if not limiter._limiter.hit(item, key):
+        # Wrap the raw RateLimitItem in a slowapi Limit so that
+        # RateLimitExceeded can access .error_message and .limit.
+        limit_wrapper = Limit(
+            limit=item,
+            key_func=get_remote_address,
+            scope=None,
+            per_method=False,
+            methods=None,
+            error_message=None,
+            exempt_when=None,
+            cost=1,
+            override_defaults=False,
+        )
+        # Set view_rate_limit so the registered exception handler can inject
+        # proper 429 response headers via limiter._inject_headers().
+        request.state.view_rate_limit = (item, [key])
+        raise RateLimitExceeded(limit_wrapper)
+
+
 def _snapshot_scan_root_payload(request: Request) -> dict:
     s = request.app.state.settings
     configured = s.snapshot_scan_root
@@ -135,6 +180,88 @@ def stats(request: Request) -> dict:
     }
 
 
+_VALID_SORT_COLUMNS = frozenset({
+    "indexed_at", "mtime", "size", "rel_path", "width", "height", "id",
+})
+
+_VALID_ORDER = frozenset({"asc", "desc"})
+
+
+@router.get("/images")
+def browse_images(
+    request: Request,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=60, ge=1),
+    sort: str = Query(default="indexed_at"),
+    order: str = Query(default="desc"),
+    size_min: int | None = Query(default=None, ge=0),
+    size_max: int | None = Query(default=None, ge=0),
+    width_min: int | None = Query(default=None, ge=0),
+    width_max: int | None = Query(default=None, ge=0),
+    height_min: int | None = Query(default=None, ge=0),
+    height_max: int | None = Query(default=None, ge=0),
+    indexed_from: str | None = Query(default=None),
+    indexed_to: str | None = Query(default=None),
+    mtime_from: float | None = Query(default=None),
+    mtime_to: float | None = Query(default=None),
+    ext: str | None = Query(default=None),
+    folder: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    has_xmp: bool = Query(default=False),
+) -> dict:
+    s = request.app.state.settings
+    if sort not in _VALID_SORT_COLUMNS:
+        raise HTTPException(400, "invalid sort column")
+    if order not in _VALID_ORDER:
+        raise HTTPException(400, "invalid order (must be 'asc' or 'desc')")
+    capped_limit = min(limit, s.max_browse_limit)
+    filters = {
+        "size_min": size_min,
+        "size_max": size_max,
+        "width_min": width_min,
+        "width_max": width_max,
+        "height_min": height_min,
+        "height_max": height_max,
+        "indexed_from": indexed_from,
+        "indexed_to": indexed_to,
+        "mtime_from": mtime_from,
+        "mtime_to": mtime_to,
+        "ext": ext,
+        "folder": folder,
+        "q": q,
+        "has_xmp": has_xmp,
+    }
+    # Strip None values so browse_images only sees active filters
+    filters = {k: v for k, v in filters.items() if v is not None}
+
+    total, rows = db.browse_images(
+        s.db_path,
+        offset=offset,
+        limit=capped_limit,
+        sort=sort,
+        order=order,
+        filters=filters,
+    )
+    items = []
+    for row in rows:
+        item = db.row_to_result(row)
+        item["size"] = row["size"]
+        item["mtime"] = row["mtime"]
+        item["sha256"] = row["sha256"]
+        item["indexed_at"] = row["indexed_at"]
+        item["thumb_url"] = f"/api/thumb/{row['id']}"
+        item["file_url"] = f"/api/file/{row['id']}"
+        items.append(item)
+
+    return {
+        "items": items,
+        "total": total,
+        "offset": offset,
+        "limit": capped_limit,
+        "has_more": offset + capped_limit < total,
+    }
+
+
 @router.get("/settings/store-snapshot")
 def get_store_snapshot_settings(request: Request) -> dict:
     return _snapshot_scan_root_payload(request)
@@ -192,6 +319,9 @@ async def search(
     k: int | None = Query(default=None, ge=1),
     min_score: float = Query(default=None, ge=-1.0, le=1.0),
 ) -> dict:
+    # Rate limit: 30 searches/minute per client IP
+    _check_rate_limit(request, "30/minute")
+
     st = request.app.state
     s = st.settings
     k = k or s.default_top_k
@@ -312,6 +442,9 @@ def rescan(request: Request, rebuild: bool = Query(default=False), use_delta: bo
         - rebuild: Vollständiger Rebuild des Index (ignoriert use_delta)
         - use_delta: Wenn True und Delta verfügbar, verarbeite nur Änderungen
     """
+    # Rate limit: 5 rescans/minute per client IP
+    _check_rate_limit(request, "5/minute")
+
     _require_admin_token(request)
     
     # Wenn rebuild=True, ignoriere Delta

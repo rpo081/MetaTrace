@@ -1,9 +1,12 @@
-import type { SearchResult } from '../types'
+import { useCallback } from 'react'
+import type { BrowseImage, SearchResult } from '../types'
+
+type ResultItem = SearchResult | BrowseImage
 
 interface Props {
-  results: SearchResult[]
+  results: ResultItem[]
   selectedId: number | null
-  onSelect: (r: SearchResult) => void
+  onSelect: (r: ResultItem) => void
 }
 
 function basename(p: string): string {
@@ -22,30 +25,38 @@ export default function ResultGrid({ results, selectedId, onSelect }: Props) {
     <div className="result-grid">
       {results.map((r) => {
         const isSelected = selectedId === r.id
+        const hasScore = 'score' in r && r.score != null
+        const score = hasScore ? (r as SearchResult).score : 0
+        const exact = 'exact' in r ? (r as SearchResult).exact : false
+        const source = 'source' in r ? (r as SearchResult).source : undefined
         return (
           <button
             key={r.id}
             type="button"
             className={`card ${isSelected ? 'card-selected' : ''}`}
             aria-pressed={isSelected}
-            aria-label={`${basename(r.rel_path)} — ${Math.round(r.score * 100)}% match${
-              r.exact ? ', exact copy' : ''
-            }${sourceLabel(r.source) ? `, ${sourceLabel(r.source)?.toLowerCase()}` : ''}`}
+            aria-label={`${basename(r.rel_path)}${
+              hasScore ? ` — ${Math.round(score * 100)}% match` : ''
+            }${exact ? ', exact copy' : ''}${
+              sourceLabel(source) ? `, ${sourceLabel(source)?.toLowerCase()}` : ''
+            }`}
             onClick={() => onSelect(r)}
           >
             <span className="card-img-wrap">
-              <img src={r.thumb_url} loading="lazy" alt="" />
-              {r.exact && <span className="badge badge-exact">EXACT</span>}
-              {sourceLabel(r.source) && <span className="badge badge-source">{sourceLabel(r.source)}</span>}
-              <span className="badge badge-score">{Math.round(r.score * 100)}%</span>
+              <img src={r.thumb_url} loading="lazy" alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} />
+              {exact && <span className="badge badge-exact">EXACT</span>}
+              {sourceLabel(source) && <span className="badge badge-source">{sourceLabel(source)}</span>}
+              {hasScore && <span className="badge badge-score">{Math.round(score * 100)}%</span>}
             </span>
             <span className="card-footer">
               <span className="card-name" title={r.original_path}>
                 {basename(r.rel_path)}
               </span>
-              <span className="score-bar" aria-hidden>
-                <span style={{ width: `${Math.max(0, Math.min(1, r.score)) * 100}%` }} />
-              </span>
+              {hasScore && (
+                <span className="score-bar" aria-hidden>
+                  <span style={{ width: `${Math.max(0, Math.min(1, score)) * 100}%` }} />
+                </span>
+              )}
             </span>
           </button>
         )

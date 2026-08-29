@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_images_mtime ON images(mtime);
+CREATE INDEX IF NOT EXISTS idx_images_indexed_at ON images(indexed_at);
 """
 
 
@@ -246,6 +248,109 @@ def update_original_paths(db_path: Path, old_root: str, new_root: str) -> int:
             (new, old, old, old_with_sep, new, new_with_sep),
         )
     return cursor.rowcount
+
+
+_VALID_SORT_COLUMNS = frozenset({
+    "indexed_at", "mtime", "size", "rel_path", "width", "height", "id",
+})
+
+
+def browse_images(
+    db_path: Path,
+    *,
+    offset: int = 0,
+    limit: int = 60,
+    sort: str = "indexed_at",
+    order: str = "desc",
+    filters: dict | None = None,
+) -> tuple[int, list[sqlite3.Row]]:
+    """Browse indexed images with filtering, sorting and pagination.
+
+    Returns ``(total_count, rows)`` where *rows* are the page slice.
+    """
+    filters = filters or {}
+    where_clauses: list[str] = []
+    params: list[object] = []
+
+    # --- size ---
+    if filters.get("size_min") is not None:
+        where_clauses.append("size >= ?")
+        params.append(int(filters["size_min"]))
+    if filters.get("size_max") is not None:
+        where_clauses.append("size <= ?")
+        params.append(int(filters["size_max"]))
+    # --- width ---
+    if filters.get("width_min") is not None:
+        where_clauses.append("width >= ?")
+        params.append(int(filters["width_min"]))
+    if filters.get("width_max") is not None:
+        where_clauses.append("width <= ?")
+        params.append(int(filters["width_max"]))
+    # --- height ---
+    if filters.get("height_min") is not None:
+        where_clauses.append("height >= ?")
+        params.append(int(filters["height_min"]))
+    if filters.get("height_max") is not None:
+        where_clauses.append("height <= ?")
+        params.append(int(filters["height_max"]))
+    # --- indexed_at ---
+    if filters.get("indexed_from") is not None:
+        where_clauses.append("indexed_at >= ?")
+        params.append(str(filters["indexed_from"]))
+    if filters.get("indexed_to") is not None:
+        where_clauses.append("indexed_at <= ?")
+        params.append(str(filters["indexed_to"]))
+    # --- mtime ---
+    if filters.get("mtime_from") is not None:
+        where_clauses.append("mtime >= ?")
+        params.append(float(filters["mtime_from"]))
+    if filters.get("mtime_to") is not None:
+        where_clauses.append("mtime <= ?")
+        params.append(float(filters["mtime_to"]))
+    # --- extension (SUBSTR match on rel_path) ---
+    if filters.get("ext") is not None:
+        ext = filters["ext"]
+        if not ext.startswith("."):
+            ext = f".{ext}"
+        where_clauses.append("SUBSTR(rel_path, -LENGTH(?)) = ?")
+        params.extend([ext.lower(), ext.lower()])
+    # --- folder (LIKE prefix match) ---
+    if filters.get("folder") is not None:
+        escaped_folder = escape_like(filters["folder"])
+        where_clauses.append("rel_path LIKE ? ESCAPE '\\'")
+        params.append(f"{escaped_folder}%")
+    # --- text search (LIKE on rel_path + xmp) ---
+    if filters.get("q") is not None and filters["q"].strip():
+        terms = [t.strip() for t in filters["q"].strip().split() if t.strip()]
+        for term in terms:
+            escaped = escape_like(term)
+            pattern = f"%{escaped}%"
+            where_clauses.append(
+                "(rel_path LIKE ? ESCAPE '\\' OR xmp LIKE ? ESCAPE '\\')"
+            )
+            params.extend([pattern, pattern])
+    # --- has_xmp ---
+    if filters.get("has_xmp"):
+        where_clauses.append("xmp != '{}'")
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+    # Validate sort
+    if sort not in _VALID_SORT_COLUMNS:
+        sort = "indexed_at"
+    order_upper = "DESC" if order.lower() == "desc" else "ASC"
+
+    with closing(connect(db_path)) as conn:
+        total = int(
+            conn.execute(f"SELECT COUNT(*) AS n FROM images WHERE {where_sql}", tuple(params))
+            .fetchone()["n"]
+        )
+        rows = conn.execute(
+            f"SELECT * FROM images WHERE {where_sql} ORDER BY {sort} {order_upper} LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+
+    return total, list(rows)
 
 
 def escape_like(s: str) -> str:

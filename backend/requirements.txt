@@ -19,3 +19,4 @@ torch==2.13.0
 # Never imported directly, but a hard transitive dependency of open_clip_torch.
 torchvision==0.28.0
 faiss-cpu==1.15.0
+slowapi==0.1.9

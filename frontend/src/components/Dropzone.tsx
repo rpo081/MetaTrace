@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
+import { SearchIcon, CloseIcon } from './Icon'
 
 interface Props {
   previewUrl: string | null
@@ -32,6 +33,11 @@ export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Prop
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault()
         openPicker()
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setOver(false)
       }
     },
     [openPicker],
@@ -85,17 +91,17 @@ export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Prop
               disabled={disabled}
               aria-label="Remove query image"
             >
-              ✕
+              <CloseIcon width="14" height="14" />
             </button>
           )}
         </div>
       ) : (
         <div className="dropzone-hint">
           <div className="dropzone-icon" aria-hidden>
-            ⌕
+            <SearchIcon width="40" height="40" />
           </div>
           <p>Drop an image here or click to browse</p>
-          <p className="muted">JPG · PNG · TIF</p>
+          <p className="muted">JPG · PNG · PSD · TIF</p>
         </div>
       )}
     </div>

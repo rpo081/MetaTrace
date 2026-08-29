@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import type { SearchResult } from '../types'
+import type { BrowseImage, SearchResult } from '../types'
+import { CloseIcon, ExternalLinkIcon } from './Icon'
 
 interface Props {
-  result: SearchResult
+  result: SearchResult | BrowseImage
   onClose: () => void
 }
 
@@ -93,6 +94,9 @@ export default function DetailPanel({ result, onClose }: Props) {
   const xmpEntries = selectedXmpEntries(result.xmp ?? {})
   const [copiedPath, setCopiedPath] = useState(false)
   const [copiedFolder, setCopiedFolder] = useState(false)
+  const hasScore = 'score' in result && result.score != null
+  const score = hasScore ? (result as SearchResult).score : 0
+  const exact = 'exact' in result ? (result as SearchResult).exact : false
 
   const onCopyOriginalPath = async () => {
     const ok = await copyText(toWindowsPath(result.original_path))
@@ -109,11 +113,11 @@ export default function DetailPanel({ result, onClose }: Props) {
       const opened = window.open(uri, '_blank', 'noopener,noreferrer')
       if (opened) return
     }
-    // Browser may block file:// navigation from http(s); fallback is copy.
+    // Browser blocked file:// — copy path and show toast
     const ok = await copyText(folder)
     setCopiedFolder(ok)
     if (ok) {
-      window.setTimeout(() => setCopiedFolder(false), 1500)
+      window.setTimeout(() => setCopiedFolder(false), 2500)
     }
   }
 
@@ -121,8 +125,8 @@ export default function DetailPanel({ result, onClose }: Props) {
     <aside className="detail-panel">
       <div className="detail-header">
         <h2>Details</h2>
-        <button className="btn btn-ghost" onClick={onClose} aria-label="Close">
-          ✕
+        <button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close">
+          <CloseIcon width="18" height="18" />
         </button>
       </div>
 
@@ -130,6 +134,7 @@ export default function DetailPanel({ result, onClose }: Props) {
         className="detail-img"
         src={detailThumbnailUrl(result.thumb_url)}
         alt={result.rel_path}
+        onError={(e) => { e.currentTarget.style.display = 'none' }}
       />
 
       <div className="detail-section">
@@ -151,21 +156,27 @@ export default function DetailPanel({ result, onClose }: Props) {
             {copiedPath && <span className="muted"> copied</span>}
             <button
               type="button"
-              className="btn btn-ghost"
+              className="btn btn-ghost detail-open-folder"
               onClick={onOpenFolder}
               title="Open containing folder in Explorer (or copy folder path if blocked)"
             >
               Open folder
             </button>
-            {copiedFolder && <span className="muted"> folder copied</span>}
+            {copiedFolder && (
+              <span className="info-box detail-inline-notice" role="status">
+                Path copied to clipboard
+              </span>
+            )}
           </span>
         </div>
-        <div className="kv">
-          <span className="k">Score</span>
-          <span className="v">
-            {(result.score * 100).toFixed(1)}%{result.exact && ' (exact byte match)'}
-          </span>
-        </div>
+        {hasScore && (
+          <div className="kv">
+            <span className="k">Score</span>
+            <span className="v">
+              {(score * 100).toFixed(1)}%{exact && ' (exact byte match)'}
+            </span>
+          </div>
+        )}
         {result.width != null && (
           <div className="kv">
             <span className="k">Dimensions</span>
@@ -178,7 +189,7 @@ export default function DetailPanel({ result, onClose }: Props) {
           <span className="k">Open</span>
           <span className="v">
             <a href={result.file_url} target="_blank" rel="noreferrer">
-              original file ↗
+              original file <ExternalLinkIcon width="12" height="12" style={{ display: 'inline', verticalAlign: 'middle' }} />
             </a>
           </span>
         </div>
@@ -188,10 +199,16 @@ export default function DetailPanel({ result, onClose }: Props) {
         <h3>XMP tags {xmpEntries.length === 0 && <span className="muted">(none)</span>}</h3>
         {xmpEntries.length > 0 && (
           <table className="xmp-table">
+            <thead>
+              <tr>
+                <th scope="col">Key</th>
+                <th scope="col">Value</th>
+              </tr>
+            </thead>
             <tbody>
               {xmpEntries.map(([key, value]) => (
                 <tr key={key}>
-                  <td className="mono">{key}</td>
+                  <th scope="row" className="mono">{key}</th>
                   <td className="selectable">{fmtValue(value)}</td>
                 </tr>
               ))}

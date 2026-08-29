@@ -9,6 +9,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from . import db
 from .api.routes import router
@@ -89,6 +93,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="MetaTrace", version="0.1.0", lifespan=lifespan)
 
+    # Rate limiting via slowapi — each app gets its own limiter instance
+    # so rate-limit state doesn't leak between test fixtures.
+    limiter = Limiter(key_func=get_remote_address)
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # CORS is opt-in: the SPA is served same-origin, so no middleware is added
     # unless METATRACE_CORS_ORIGINS explicitly lists allowed origins.
     cors_origins = settings.cors_origin_list
@@ -103,6 +113,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     else:
         log.info("CORS disabled (same-origin SPA); set METATRACE_CORS_ORIGINS to enable")
 
+    app.add_middleware(SlowAPIMiddleware)
+
     @app.middleware("http")
     async def security_headers(request, call_next):
         response = await call_next(request)
@@ -116,6 +128,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
         )
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        response.headers.setdefault("X-Frame-Options", "DENY")
         return response
 
     app.include_router(router)
