@@ -28,3 +28,6 @@ logs/
 # Editors / OS
 .DS_Store
 Thumbs.db
+
+# Local dev override (builds from source; server uses GHCR image)
+docker-compose.override.yml

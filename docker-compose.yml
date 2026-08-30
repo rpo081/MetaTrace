@@ -1,7 +1,6 @@
 services:
   metatrace:
-    build: .
-    image: metatrace:local
+    image: ghcr.io/${GHCR_USER:-rpo081}/metatrace:latest
     container_name: metatrace
     ports:
       - "${METATRACE_PORT:-8000}:8000"

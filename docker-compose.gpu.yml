@@ -1,10 +1,6 @@
 services:
   metatrace:
-    build:
-      context: .
-      args:
-        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
-    image: metatrace:gpu
+    image: ghcr.io/${GHCR_USER:-rpo081}/metatrace:latest
     container_name: metatrace
     ports:
       - "${METATRACE_PORT:-8000}:8000"
