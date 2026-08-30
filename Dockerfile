@@ -7,7 +7,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ---------- stage 2: python runtime (CUDA-capable torch, CPU FAISS) ----------
+# ---------- stage 2: python runtime (CPU torch, CPU FAISS) ----------
 FROM python:3.12-slim AS runtime
 
 # Build arg to switch between CUDA and CPU torch wheels.
