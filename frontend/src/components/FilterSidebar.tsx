@@ -61,7 +61,7 @@ export default function FilterSidebar({ filters, onChange }: Props) {
       </details>
 
       {/* Folder */}
-      <details open>
+      <details>
         <summary>Folder</summary>
         <div className="filter-section">
           <input
@@ -77,7 +77,7 @@ export default function FilterSidebar({ filters, onChange }: Props) {
       </details>
 
       {/* Extension */}
-      <details open>
+      <details>
         <summary>Extension</summary>
         <div className="filter-section">
           <div className="filter-chips-inline">
@@ -101,36 +101,38 @@ export default function FilterSidebar({ filters, onChange }: Props) {
       <details>
         <summary>File Size</summary>
         <div className="filter-section">
-          <label className="filter-field" htmlFor="filter-size-min">
-            <span className="muted filter-label-small">Min (MB)</span>
-            <input
-              id="filter-size-min"
-              type="number"
-              className="text-input"
-              min={0}
-              placeholder="0"
-              value={filters.size_min != null ? String(Math.round(filters.size_min / (1024 * 1024))) : ''}
-              onChange={(e) => {
-                const v = e.target.value ? parseInt(e.target.value, 10) : undefined
-                set('size_min', v != null && !isNaN(v) ? v * 1024 * 1024 : undefined)
-              }}
-            />
-          </label>
-          <label className="filter-field" htmlFor="filter-size-max">
-            <span className="muted filter-label-small">Max (MB)</span>
-            <input
-              id="filter-size-max"
-              type="number"
-              className="text-input"
-              min={0}
-              placeholder="∞"
-              value={filters.size_max != null ? String(Math.round(filters.size_max / (1024 * 1024))) : ''}
-              onChange={(e) => {
-                const v = e.target.value ? parseInt(e.target.value, 10) : undefined
-                set('size_max', v != null && !isNaN(v) ? v * 1024 * 1024 : undefined)
-              }}
-            />
-          </label>
+          <div className="filter-field-row">
+            <label className="filter-field" htmlFor="filter-size-min">
+              <span className="muted filter-label-small">Min (MB)</span>
+              <input
+                id="filter-size-min"
+                type="number"
+                className="text-input"
+                min={0}
+                placeholder="0"
+                value={filters.size_min != null ? String(Math.round(filters.size_min / (1024 * 1024))) : ''}
+                onChange={(e) => {
+                  const v = e.target.value ? parseInt(e.target.value, 10) : undefined
+                  set('size_min', v != null && !isNaN(v) ? v * 1024 * 1024 : undefined)
+                }}
+              />
+            </label>
+            <label className="filter-field" htmlFor="filter-size-max">
+              <span className="muted filter-label-small">Max (MB)</span>
+              <input
+                id="filter-size-max"
+                type="number"
+                className="text-input"
+                min={0}
+                placeholder="∞"
+                value={filters.size_max != null ? String(Math.round(filters.size_max / (1024 * 1024))) : ''}
+                onChange={(e) => {
+                  const v = e.target.value ? parseInt(e.target.value, 10) : undefined
+                  set('size_max', v != null && !isNaN(v) ? v * 1024 * 1024 : undefined)
+                }}
+              />
+            </label>
+          </div>
           <button type="button" className="btn btn-sm" onClick={() => clearSection(['size_min', 'size_max'])}>Clear</button>
         </div>
       </details>
@@ -139,54 +141,58 @@ export default function FilterSidebar({ filters, onChange }: Props) {
       <details>
         <summary>Dimensions</summary>
         <div className="filter-section">
-          <label className="filter-field" htmlFor="filter-width-min">
-            <span className="muted filter-label-small">Min width</span>
-            <input
-              id="filter-width-min"
-              type="number"
-              className="text-input"
-              min={0}
-              placeholder="0"
-              value={filters.width_min ?? ''}
-              onChange={(e) => set('width_min', e.target.value ? parseInt(e.target.value, 10) : undefined)}
-            />
-          </label>
-          <label className="filter-field" htmlFor="filter-width-max">
-            <span className="muted filter-label-small">Max width</span>
-            <input
-              id="filter-width-max"
-              type="number"
-              className="text-input"
-              min={0}
-              placeholder="∞"
-              value={filters.width_max ?? ''}
-              onChange={(e) => set('width_max', e.target.value ? parseInt(e.target.value, 10) : undefined)}
-            />
-          </label>
-          <label className="filter-field" htmlFor="filter-height-min">
-            <span className="muted filter-label-small">Min height</span>
-            <input
-              id="filter-height-min"
-              type="number"
-              className="text-input"
-              min={0}
-              placeholder="0"
-              value={filters.height_min ?? ''}
-              onChange={(e) => set('height_min', e.target.value ? parseInt(e.target.value, 10) : undefined)}
-            />
-          </label>
-          <label className="filter-field" htmlFor="filter-height-max">
-            <span className="muted filter-label-small">Max height</span>
-            <input
-              id="filter-height-max"
-              type="number"
-              className="text-input"
-              min={0}
-              placeholder="∞"
-              value={filters.height_max ?? ''}
-              onChange={(e) => set('height_max', e.target.value ? parseInt(e.target.value, 10) : undefined)}
-            />
-          </label>
+          <div className="filter-field-row">
+            <label className="filter-field" htmlFor="filter-width-min">
+              <span className="muted filter-label-small">Min width</span>
+              <input
+                id="filter-width-min"
+                type="number"
+                className="text-input"
+                min={0}
+                placeholder="0"
+                value={filters.width_min ?? ''}
+                onChange={(e) => set('width_min', e.target.value ? parseInt(e.target.value, 10) : undefined)}
+              />
+            </label>
+            <label className="filter-field" htmlFor="filter-width-max">
+              <span className="muted filter-label-small">Max width</span>
+              <input
+                id="filter-width-max"
+                type="number"
+                className="text-input"
+                min={0}
+                placeholder="∞"
+                value={filters.width_max ?? ''}
+                onChange={(e) => set('width_max', e.target.value ? parseInt(e.target.value, 10) : undefined)}
+              />
+            </label>
+          </div>
+          <div className="filter-field-row">
+            <label className="filter-field" htmlFor="filter-height-min">
+              <span className="muted filter-label-small">Min height</span>
+              <input
+                id="filter-height-min"
+                type="number"
+                className="text-input"
+                min={0}
+                placeholder="0"
+                value={filters.height_min ?? ''}
+                onChange={(e) => set('height_min', e.target.value ? parseInt(e.target.value, 10) : undefined)}
+              />
+            </label>
+            <label className="filter-field" htmlFor="filter-height-max">
+              <span className="muted filter-label-small">Max height</span>
+              <input
+                id="filter-height-max"
+                type="number"
+                className="text-input"
+                min={0}
+                placeholder="∞"
+                value={filters.height_max ?? ''}
+                onChange={(e) => set('height_max', e.target.value ? parseInt(e.target.value, 10) : undefined)}
+              />
+            </label>
+          </div>
           <button type="button" className="btn btn-sm" onClick={() => clearSection(['width_min', 'width_max', 'height_min', 'height_max'])}>Clear</button>
         </div>
       </details>

@@ -11,6 +11,8 @@ services:
       NETWORK_ROOT: ${NETWORK_ROOT:-}
       RUN_INITIAL_SCAN_ON_START: ${RUN_INITIAL_SCAN_ON_START:-true}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
+      # Force CPU mode for CLIP embeddings.
+      DEVICE: ${DEVICE:-cpu}
       # Scan throughput tuning — runtime-tunable via .env, no rebuild needed
       # (`docker compose up -d` recreates the container).
       BATCH_SIZE: ${BATCH_SIZE:-64}
@@ -28,11 +30,4 @@ services:
       - ${LOCAL_IMAGE_STORE:?Set LOCAL_IMAGE_STORE in .env}:/store:ro
       # SQLite database, FAISS index, thumbnail cache; accessible on the host.
       - ./data:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     restart: unless-stopped

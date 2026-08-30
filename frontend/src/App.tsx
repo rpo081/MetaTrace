@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
   getStats,
@@ -11,8 +11,10 @@ import {
 import Dropzone from './components/Dropzone'
 import DetailPanel from './components/DetailPanel'
 import ResultGrid from './components/ResultGrid'
+import ResultList from './components/ResultList'
+import ViewToggle from './components/ViewToggle'
 import BrowseView from './components/BrowseView'
-import { SearchIcon, GridIcon, GearIcon, CloseIcon } from './components/Icon'
+import { SearchIcon, GridIcon, GearIcon, CloseIcon, SortAscIcon, SortDescIcon } from './components/Icon'
 import type {
   AppPage,
   ScanReport,
@@ -21,6 +23,7 @@ import type {
   SearchResult,
   Stats,
   RescanDeltaResponse,
+  ViewMode,
 } from './types'
 
 const IDLE_REFRESH_MS = 10_000
@@ -270,6 +273,48 @@ export default function App() {
   const [showFullRescanModal, setShowFullRescanModal] = useState(false)
   const [fullRescanConfirmed, setFullRescanConfirmed] = useState(false)
   const [fullRescanNoticeActive, setFullRescanNoticeActive] = useState(false)
+
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    try {
+      return (localStorage.getItem('metatrace_view_mode') as ViewMode) || 'grid'
+    } catch {
+      return 'grid'
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('metatrace_view_mode', viewMode)
+    } catch { /* ignore */ }
+  }, [viewMode])
+
+  const [searchSort, setSearchSort] = useState('score')
+  const [searchOrder, setSearchOrder] = useState<'asc' | 'desc'>('desc')
+
+  const SEARCH_SORT_OPTIONS = [
+    { value: 'score', label: 'Relevance' },
+    { value: 'rel_path', label: 'Filename' },
+    { value: 'width', label: 'Width' },
+    { value: 'height', label: 'Height' },
+    { value: 'id', label: 'ID' },
+  ]
+
+  const sortedResults = useMemo(() => {
+    if (!response?.results) return []
+    const sorted = [...response.results]
+    sorted.sort((a, b) => {
+      const aVal = a[searchSort as keyof SearchResult]
+      const bVal = b[searchSort as keyof SearchResult]
+      if (aVal == null && bVal == null) return 0
+      if (aVal == null) return 1
+      if (bVal == null) return -1
+      if (typeof aVal === 'string' && typeof bVal === 'string') {
+        return searchOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
+      }
+      const cmp = Number(aVal) - Number(bVal)
+      return searchOrder === 'asc' ? cmp : -cmp
+    })
+    return sorted
+  }, [response, searchSort, searchOrder])
 
   const abortRef = useRef<AbortController | null>(null)
   const previewUrlRef = useRef<string | null>(null)
@@ -757,14 +802,51 @@ export default function App() {
                     : 'No matches above the score threshold.'}
                 </div>
               ) : (
-                <div className={selected ? 'split' : ''}>
-                  <ResultGrid
-                    results={response.results}
-                    selectedId={selected?.id ?? null}
-                    onSelect={(r) => { if ('score' in r) setSelected(r as SearchResult) }}
-                  />
-                  {selected && <DetailPanel result={selected} onClose={() => setSelected(null)} />}
-                </div>
+                <>
+                  <div className="browse-toolbar">
+                    <ViewToggle mode={viewMode} onChange={setViewMode} />
+                    <div className="browse-sort">
+                      <label htmlFor="search-sort-select" className="muted browse-sort-label">Sort:</label>
+                      <div className="browse-sort-controls">
+                        <select
+                          id="search-sort-select"
+                          className="text-input browse-sort-select"
+                          value={searchSort}
+                          onChange={(e) => setSearchSort(e.target.value)}
+                        >
+                          {SEARCH_SORT_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="btn browse-sort-order-btn"
+                          onClick={() => setSearchOrder((o) => (o === 'desc' ? 'asc' : 'desc'))}
+                          title={`Current order: ${searchOrder}. Click to toggle.`}
+                          aria-label={`Toggle sort direction, currently ${searchOrder === 'desc' ? 'descending' : 'ascending'}`}
+                        >
+                          {searchOrder === 'desc' ? <SortDescIcon width="16" height="16" /> : <SortAscIcon width="16" height="16" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className={selected ? 'split' : ''}>
+                    {viewMode === 'grid' ? (
+                      <ResultGrid
+                        results={sortedResults}
+                        selectedId={selected?.id ?? null}
+                        onSelect={(r) => { if ('score' in r) setSelected(r as SearchResult) }}
+                      />
+                    ) : (
+                      <ResultList
+                        results={sortedResults}
+                        selectedId={selected?.id ?? null}
+                        onSelect={(r) => { if ('score' in r) setSelected(r as SearchResult) }}
+                      />
+                    )}
+                    {selected && <DetailPanel result={selected} onClose={() => setSelected(null)} />}
+                  </div>
+                </>
               )}
             </>
           ) : (

@@ -7,13 +7,7 @@ interface Props {
   onClose: () => void
 }
 
-const XMP_WHITELIST = [
-  'TransmissionReference',
-  'MetadataDate',
-  'Creator',
-  'Description',
-  'Subject',
-] as const
+const XMP_PRIORITY = ['Creator', 'Description'] as const
 
 function fmtValue(v: unknown): string {
   if (Array.isArray(v)) return v.join('; ')
@@ -35,12 +29,22 @@ function matchesXmpAttribute(key: string, attribute: string): boolean {
   return tail === attrLower
 }
 
-function selectedXmpEntries(xmp: Record<string, unknown>): Array<[string, unknown]> {
+function sortedXmpEntries(xmp: Record<string, unknown>): Array<[string, unknown]> {
   const entries = Object.entries(xmp)
-  return XMP_WHITELIST.flatMap((attribute) => {
-    const found = entries.find(([key]) => matchesXmpAttribute(key, attribute))
-    return found ? [[attribute, found[1]] as [string, unknown]] : []
-  })
+  if (entries.length === 0) return []
+
+  const prioritized: Array<[string, unknown]> = []
+  const rest = [...entries]
+
+  for (const attr of XMP_PRIORITY) {
+    const idx = rest.findIndex(([key]) => matchesXmpAttribute(key, attr))
+    if (idx !== -1) {
+      const [key, value] = rest.splice(idx, 1)[0]
+      prioritized.push([attr, value])
+    }
+  }
+
+  return [...prioritized, ...rest]
 }
 
 function toWindowsPath(path: string): string {
@@ -91,7 +95,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 export default function DetailPanel({ result, onClose }: Props) {
-  const xmpEntries = selectedXmpEntries(result.xmp ?? {})
+  const xmpEntries = sortedXmpEntries(result.xmp ?? {})
   const [copiedPath, setCopiedPath] = useState(false)
   const [copiedFolder, setCopiedFolder] = useState(false)
   const hasScore = 'score' in result && result.score != null

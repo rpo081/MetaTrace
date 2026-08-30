@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { SearchIcon, CloseIcon } from './Icon'
 
@@ -9,9 +9,56 @@ interface Props {
   disabled?: boolean
 }
 
+function mimeToExt(mime: string): string {
+  const sub = mime.split('/')[1]?.toLowerCase() ?? ''
+  if (sub === 'jpeg' || sub === 'jpg') return 'jpg'
+  if (sub === 'png') return 'png'
+  if (sub === 'webp') return 'webp'
+  if (sub === 'gif') return 'gif'
+  if (sub === 'tiff' || sub === 'tif') return 'tif'
+  return sub || 'png'
+}
+
+function isTextInputActive(): boolean {
+  const el = document.activeElement
+  if (!el || !(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable
+}
+
 export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Props) {
   const [over, setOver] = useState(false)
+  const [pasteFlash, setPasteFlash] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const onFileRef = useRef(onFile)
+  const disabledRef = useRef(disabled)
+
+  onFileRef.current = onFile
+  disabledRef.current = disabled
+
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (disabledRef.current || isTextInputActive()) return
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item.type.startsWith('image/')) {
+          const blob = item.getAsFile()
+          if (!blob) continue
+          e.preventDefault()
+          const ext = mimeToExt(blob.type)
+          const file = new File([blob], `pasted-image.${ext}`, { type: blob.type })
+          onFileRef.current(file)
+          setPasteFlash(true)
+          window.setTimeout(() => setPasteFlash(false), 600)
+          return
+        }
+      }
+    }
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [])
 
   const openPicker = useCallback(() => {
     if (!disabled) inputRef.current?.click()
@@ -45,7 +92,7 @@ export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Prop
 
   return (
     <div
-      className={`dropzone ${over ? 'dropzone-over' : ''}`}
+      className={`dropzone ${over ? 'dropzone-over' : ''} ${pasteFlash ? 'dropzone-paste-flash' : ''}`}
       onClick={openPicker}
       onKeyDown={onKeyDown}
       onDragOver={(e) => {
@@ -61,7 +108,7 @@ export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Prop
       role="button"
       tabIndex={disabled ? -1 : 0}
       aria-disabled={disabled || undefined}
-      aria-label="Upload query image"
+      aria-label="Upload query image — drop, paste, or click to browse"
     >
       <input
         ref={inputRef}
@@ -100,8 +147,11 @@ export default function Dropzone({ previewUrl, onFile, onClear, disabled }: Prop
           <div className="dropzone-icon" aria-hidden>
             <SearchIcon width="40" height="40" />
           </div>
-          <p>Drop an image here or click to browse</p>
+          <p>Drop, paste, or click to browse</p>
           <p className="muted">JPG · PNG · PSD · TIF</p>
+          <p className="muted dropzone-shortcut-hint" aria-hidden>
+            <kbd>⌘V</kbd> / <kbd>Ctrl+V</kbd>
+          </p>
         </div>
       )}
     </div>
