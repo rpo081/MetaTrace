@@ -11,8 +11,8 @@ React UI (drag & drop) ──> FastAPI  /api/search  (upload → CLIP embed → 
 ```
 
 - **Backend**: FastAPI + CLIP (`open_clip`, ViT-B-32 QuickGELU, OpenAI weights,
-  `DEVICE=auto` with CUDA when available) + FAISS flat inner-product index in RAM
-  + SQLite metadata.
+  `DEVICE=cpu` by default; CUDA via GPU compose overlay) + FAISS flat
+  inner-product index in RAM + SQLite metadata.
 - **Frontend**: Vite + React + TS; served as static files by the same container.
 - **Mirror / Sync**: `scripts/network_to_local_menu.py` is the preferred
   Windows UI for maintaining the local SSD mirror; it drives
@@ -47,25 +47,23 @@ The image builds natively for `linux/amd64` (x64 servers, Intel Macs) and
 architecture, so `docker compose up -d --build` works unchanged everywhere.
 
 When an NVIDIA GPU is available to Docker, MetaTrace uses it for CLIP
-embedding (`DEVICE=auto` selects CUDA first). FAISS remains CPU (`faiss-cpu`).
+embedding. FAISS remains CPU (`faiss-cpu`).
 
-On hosts without an NVIDIA GPU (or for testing uncommitted changes without
-publishing an image), build and run a CPU-only container locally:
+The default `docker compose up -d --build` runs CPU-only. For GPU support,
+use the GPU compose overlay:
 
 ```bash
-docker compose -f docker-compose.cpu.local.yml up -d --build
+docker compose -f docker-compose.gpu.yml up -d --build
 ```
 
 To publish one multi-arch image from a single machine:
 
 ```bash
-./docker-build-push.sh v0.1.0 rpo081   # explicit tag + username
+./docker-build-push.sh v1.0.0 rpo081   # explicit tag + username
 ./docker-build-push.sh                 # defaults: git tag/SHA, gh CLI login
 ```
 
-Both tags (`:v0.1.0` and `:latest`) are pushed as one multi-arch manifest.
-The foreign platform is cross-built under QEMU — first build of the torch and
-CLIP weight layers is slow, later builds hit the layer cache.
+Both tags (`:v1.0.0` and `:latest`) are pushed as one multi-arch manifest.
 
 ## Network mirror workflow
 
@@ -170,9 +168,10 @@ into the image.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/search?k=24&min_score=0.1` | multipart `file` upload → ranked results |
+| `POST /api/search?k=24&min_score=0.1` | multipart `file` upload and/or `q` text query → ranked results |
 | `GET /api/thumb/{id}?size=256` | cached PNG thumbnail (default 256 px; accepts 64–1024 px, alpha preserved) |
 | `GET /api/file/{id}` | original file stream |
+| `GET /api/images` | browse/indexed images with pagination, sorting, and filters (ext, folder, size, dimensions, dates, has_xmp) |
 | `POST /api/rescan?rebuild=false&use_delta=true` | trigger scan; uses delta changes when available unless `rebuild=true` |
 | `POST /api/rescan/pause` | request pause for the running scan at the next checkpoint |
 | `POST /api/rescan/resume` | resume a paused scan, including persisted checkpoints after restart |
@@ -235,7 +234,7 @@ Environment variables (or `.env`, see `.env.example`):
 | `NETWORK_ROOT` | — | e.g. `\\nas\share\renderings`; prefixes `original_path` |
 | `MODEL_NAME` | `ViT-B-32-quickgelu` | open_clip architecture |
 | `MODEL_PRETRAINED` | `openai` | weight source |
-| `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; see macOS note in implementation notes |
+| `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; docker-compose defaults to `cpu`, use GPU overlay for CUDA |
 | `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency — keep modest for print-resolution renders |
 | `DECODE_WORKERS` | `4` | scan-time threads for image decode + sha256 (PIL/psd-tools) |
 | `DECODE_PREFETCH` | `16` | max decoded images held in memory during a scan chunk (bounded window; frames are downscaled to 512 px in the worker) |
@@ -254,7 +253,8 @@ Environment variables (or `.env`, see `.env.example`):
 ## Performance notes
 
 - Index: 20k × 512 float32 ≈ 40 MB RAM → exact flat search, sub-millisecond queries.
-- Embedding can use CUDA (`DEVICE=auto`) when NVIDIA GPU passthrough is enabled.
+- Embedding can use CUDA when NVIDIA GPU passthrough is enabled (use the GPU
+  compose overlay). FAISS remains CPU (`faiss-cpu`).
 - Rescan time is often dominated by filesystem inventory/stat calls on large
   bind mounts; GPU helps embedding work, not full-tree metadata walks.
 - `scripts/store_snapshot.py` writes the baseline snapshot to
