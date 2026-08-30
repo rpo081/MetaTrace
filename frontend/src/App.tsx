@@ -14,7 +14,11 @@ import ResultGrid from './components/ResultGrid'
 import ResultList from './components/ResultList'
 import ViewToggle from './components/ViewToggle'
 import BrowseView from './components/BrowseView'
-import { SearchIcon, GridIcon, GearIcon, CloseIcon, SortAscIcon, SortDescIcon } from './components/Icon'
+import { SearchIcon, GridIcon, GearIcon, CloseIcon, SortAscIcon, SortDescIcon, LogoutIcon } from './components/Icon'
+import { AuthProvider, useAuth } from './features/auth/AuthContext'
+import { RequireAuth } from './features/auth/RequireAuth'
+import { ForceChangePasswordModal } from './features/auth/ForceChangePasswordModal'
+import { UserManagementSection } from './features/auth/UserManagementSection'
 import type {
   AppPage,
   ScanReport,
@@ -254,6 +258,17 @@ function DeltaInfo({
 }
 
 export default function App() {
+  return (
+    <AuthProvider>
+      <RequireAuth>
+        <AppContent />
+      </RequireAuth>
+    </AuthProvider>
+  )
+}
+
+function AppContent() {
+  const { state, logout } = useAuth()
   const [page, setPage] = useState<AppPage>('search')
   const [stats, setStats] = useState<Stats | null>(null)
   const [delta, setDelta] = useState<RescanDeltaResponse | null>(null)
@@ -650,6 +665,20 @@ export default function App() {
                 <NavIcon page="settings" />
                 <span className="nav-btn-label">Settings</span>
               </button>
+              {state.status === 'authenticated' && (
+                <button
+                  type="button"
+                  className="nav-btn logout-btn"
+                  onClick={() => {
+                    void logout()
+                  }}
+                  aria-label="Log out"
+                  title={state.user ? `Log out (${state.user.username})` : 'Log out'}
+                >
+                  <LogoutIcon className="nav-btn-icon" />
+                  <span className="nav-btn-label">Log out</span>
+                </button>
+              )}
             </div>
           </nav>
         </div>
@@ -947,9 +976,14 @@ export default function App() {
               <div className="muted">No scan report is available yet.</div>
             )}
           </section>
+
+          {state.user?.role === 'admin' && (
+            <UserManagementSection currentUserId={state.user.id} />
+          )}
         </div>
       </main>
       )}
+      <ForceChangePasswordModal />
     </div>
   )
 }

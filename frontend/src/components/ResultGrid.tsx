@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { authenticatedUrl } from '../api'
 import type { BrowseImage, SearchResult } from '../types'
 
 type ResultItem = SearchResult | BrowseImage
@@ -43,7 +43,7 @@ export default function ResultGrid({ results, selectedId, onSelect }: Props) {
             onClick={() => onSelect(r)}
           >
             <span className="card-img-wrap">
-              <img src={r.thumb_url} loading="lazy" alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} />
+              <img src={authenticatedUrl(r.thumb_url)} loading="lazy" alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} />
               {exact && <span className="badge badge-exact">EXACT</span>}
               {sourceLabel(source) && <span className="badge badge-source">{sourceLabel(source)}</span>}
               {hasScore && <span className="badge badge-score">{Math.round(score * 100)}%</span>}
@@ -54,7 +54,16 @@ export default function ResultGrid({ results, selectedId, onSelect }: Props) {
               </span>
               {hasScore && (
                 <span className="score-bar" aria-hidden>
-                  <span style={{ width: `${Math.max(0, Math.min(1, score)) * 100}%` }} />
+                  <span
+                    className="score-bar-fill"
+                    data-pct={Math.round(Math.max(0, Math.min(1, score)) * 100)}
+                    ref={(el) => {
+                      if (el) {
+                        const pct = Math.round(Math.max(0, Math.min(1, score)) * 100)
+                        el.style.width = `${pct}%`
+                      }
+                    }}
+                  />
                 </span>
               )}
             </span>

@@ -53,6 +53,23 @@ def load_snapshot_file(path: Path) -> dict[str, dict[str, float | int]]:
     return data
 
 
+def _atomic_write_json(path: Path, payload: dict, *, indent: int | None = None) -> None:
+    """Write JSON atomically via mkstemp + os.replace (crash-safe)."""
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=indent)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_snapshot_files(
     *,
     snapshot_file: Path,
@@ -61,12 +78,8 @@ def save_snapshot_files(
     file_state: dict[str, dict[str, float | int]],
 ) -> None:
     payload = build_snapshot_payload(root_path, file_state)
-    snapshot_file.parent.mkdir(parents=True, exist_ok=True)
-    latest_snapshot_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(snapshot_file, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-    with open(latest_snapshot_file, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
+    _atomic_write_json(snapshot_file, payload)
+    _atomic_write_json(latest_snapshot_file, payload)
 
 
 def generate_rescan_json(
@@ -91,14 +104,11 @@ def generate_rescan_json(
             "modified": sorted(modified),
         },
     }
-    data_folder.mkdir(parents=True, exist_ok=True)
     timestamp_str = timestamp.replace(":", "-").split(".")[0]
     output_filename = data_folder / f"rescan_delta_{timestamp_str}.json"
     latest_filename = data_folder / "rescan_delta_latest.json"
-    with open(output_filename, "w", encoding="utf-8") as fh:
-        json.dump(rescan_data, fh, indent=2)
-    with open(latest_filename, "w", encoding="utf-8") as fh:
-        json.dump(rescan_data, fh, indent=2)
+    _atomic_write_json(output_filename, rescan_data, indent=2)
+    _atomic_write_json(latest_filename, rescan_data, indent=2)
     return output_filename
 
 

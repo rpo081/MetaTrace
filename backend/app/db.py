@@ -1,4 +1,4 @@
-"""SQLite persistence for image metadata."""
+"""SQLite persistence for image metadata and authentication."""
 from __future__ import annotations
 
 import json
@@ -27,6 +27,51 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 CREATE INDEX IF NOT EXISTS idx_images_mtime ON images(mtime);
 CREATE INDEX IF NOT EXISTS idx_images_indexed_at ON images(indexed_at);
+CREATE INDEX IF NOT EXISTS idx_images_size ON images(size);
+CREATE INDEX IF NOT EXISTS idx_images_rel_path ON images(rel_path);
+CREATE INDEX IF NOT EXISTS idx_images_width ON images(width);
+CREATE INDEX IF NOT EXISTS idx_images_height ON images(height);
+
+-- Auth tables
+CREATE TABLE IF NOT EXISTS users (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    username             TEXT NOT NULL UNIQUE,
+    email                TEXT NOT NULL UNIQUE,
+    password_hash        TEXT NOT NULL,
+    role                 TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('admin', 'editor', 'viewer')),
+    mfa_secret           TEXT,
+    is_active            INTEGER NOT NULL DEFAULT 1,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    last_login           TEXT,
+    failed_attempts      INTEGER NOT NULL DEFAULT 0,
+    locked_until         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash       TEXT NOT NULL UNIQUE,
+    family_id        TEXT NOT NULL,
+    rotation_counter INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at       TEXT NOT NULL,
+    revoked_at       TEXT,
+    ip_address       TEXT,
+    user_agent       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    action      TEXT NOT NULL,
+    resource    TEXT,
+    ip_address  TEXT,
+    user_agent  TEXT,
+    timestamp   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    details     TEXT
+);
 """
 
 
@@ -39,8 +84,19 @@ class Entry:
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, timeout=60)
+    conn = sqlite3.connect(db_path, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # Per-connection pragmas for 200k scale: WAL allows concurrent
+    # readers during bulk upserts; NORMAL + busy_timeout avoids
+    # SQLITE_BUSY under thumb/browse/scan concurrency.
+    try:
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA journal_size_limit=67108864")
+        conn.execute("PRAGMA busy_timeout=60000")
+        conn.execute("PRAGMA cache_size=-64000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -48,8 +104,20 @@ def init_db(db_path: Path, *, configure_journal: bool = True) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(connect(db_path)) as conn:
         if configure_journal:
-            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA journal_size_limit=67108864")
         conn.executescript(_SCHEMA)
+
+    # Idempotent column migrations for older deployments whose `users` table
+    # pre-dates a given column. CREATE TABLE IF NOT EXISTS leaves the schema
+    # untouched, so we apply additive ALTERs here.
+    with closing(connect(db_path)) as conn, conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        if "must_change_password" not in cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 def reset(db_path: Path) -> None:
@@ -401,3 +469,256 @@ def search_by_text(db_path: Path, q: str, limit: int = 100) -> list[sqlite3.Row]
 
     with closing(connect(db_path)) as conn:
         return conn.execute(sql, tuple(params)).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Auth CRUD
+# ---------------------------------------------------------------------------
+
+def user_count(db_path: Path) -> int:
+    """Return the total number of users."""
+    with closing(connect(db_path)) as conn:
+        return int(conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"])
+
+
+def create_user(
+    db_path: Path,
+    *,
+    username: str,
+    email: str,
+    password_hash: str,
+    role: str = "viewer",
+    must_change_password: bool = False,
+) -> int:
+    """Insert a new user and return its id."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO users (username, email, password_hash, role, must_change_password) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (username, email, password_hash, role, int(bool(must_change_password))),
+        )
+        row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    assert row is not None
+    return int(row["id"])
+
+
+def get_must_change_password(db_path: Path, user_id: int) -> bool | None:
+    """Return the must_change_password flag for the user, or None if user not found.
+
+    Returning ``None`` (rather than silently coercing to ``False``) for a
+    missing user lets callers distinguish "flag is unset" from "no such user"
+    — the previous contract masked bugs and made a deleted-but-cached user_id
+    look like a normal no-op.
+    """
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT must_change_password FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return bool(row["must_change_password"])
+
+
+def clear_must_change_password(db_path: Path, user_id: int) -> None:
+    """Clear the must-change-password flag for the given user."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE users SET must_change_password = 0, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+            "WHERE id = ?",
+            (user_id,),
+        )
+
+
+def get_user_by_id(db_path: Path, user_id: int) -> sqlite3.Row | None:
+    with closing(connect(db_path)) as conn:
+        return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def get_user_by_username(db_path: Path, username: str) -> sqlite3.Row | None:
+    with closing(connect(db_path)) as conn:
+        return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+
+def get_user_by_email(db_path: Path, email: str) -> sqlite3.Row | None:
+    with closing(connect(db_path)) as conn:
+        return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+
+
+def list_users(db_path: Path) -> list[sqlite3.Row]:
+    with closing(connect(db_path)) as conn:
+        return conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+
+
+def update_user(
+    db_path: Path,
+    user_id: int,
+    *,
+    email: str | None = None,
+    role: str | None = None,
+    is_active: int | None = None,
+    password_hash: str | None = None,
+) -> bool:
+    """Update user fields. Returns True if a row was affected."""
+    sets: list[str] = []
+    params: list[object] = []
+    if email is not None:
+        sets.append("email = ?")
+        params.append(email)
+    if role is not None:
+        sets.append("role = ?")
+        params.append(role)
+    if is_active is not None:
+        sets.append("is_active = ?")
+        params.append(is_active)
+    if password_hash is not None:
+        sets.append("password_hash = ?")
+        params.append(password_hash)
+    if not sets:
+        return False
+    sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+    params.append(user_id)
+    sql = f"UPDATE users SET {', '.join(sets)} WHERE id = ?"
+    with closing(connect(db_path)) as conn, conn:
+        cursor = conn.execute(sql, tuple(params))
+    return cursor.rowcount > 0
+
+
+def record_login_success(db_path: Path, user_id: int) -> None:
+    """Reset failed_attempts and set last_login."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET last_login = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                failed_attempts = 0,
+                locked_until = NULL,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+
+
+def record_login_failure(db_path: Path, user_id: int, max_attempts: int, lockout_minutes: int) -> None:
+    """Increment failed_attempts and optionally lock the account."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET failed_attempts = failed_attempts + 1,
+                locked_until = CASE
+                    WHEN failed_attempts + 1 >= ? THEN
+                        datetime('now', '+' || ? || ' minutes')
+                    ELSE locked_until
+                END,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE id = ?
+            """,
+            (max_attempts, lockout_minutes, user_id),
+        )
+
+
+def delete_user(db_path: Path, user_id: int) -> bool:
+    """Delete a user. Returns True if a row was deleted."""
+    with closing(connect(db_path)) as conn, conn:
+        cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    return cursor.rowcount > 0
+
+
+# ── Refresh tokens ──────────────────────────────────────────────────────
+
+def store_refresh_token(
+    db_path: Path,
+    *,
+    user_id: int,
+    token_hash: str,
+    family_id: str,
+    rotation_counter: int = 0,
+    expires_at: str,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> int:
+    """Persist a refresh token row and return its id."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO refresh_tokens
+                (user_id, token_hash, family_id, rotation_counter, expires_at, ip_address, user_agent)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, token_hash, family_id, rotation_counter, expires_at, ip_address, user_agent),
+        )
+        row = conn.execute(
+            "SELECT id FROM refresh_tokens WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+    assert row is not None
+    return int(row["id"])
+
+
+def get_refresh_token_by_hash(db_path: Path, token_hash: str) -> sqlite3.Row | None:
+    with closing(connect(db_path)) as conn:
+        return conn.execute(
+            "SELECT * FROM refresh_tokens WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+
+
+def revoke_refresh_token(db_path: Path, token_hash: str) -> None:
+    """Mark a single refresh token as revoked."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE refresh_tokens
+            SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE token_hash = ? AND revoked_at IS NULL
+            """,
+            (token_hash,),
+        )
+
+
+def revoke_all_user_tokens(db_path: Path, user_id: int) -> None:
+    """Revoke every active refresh token for a user."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE refresh_tokens
+            SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE user_id = ? AND revoked_at IS NULL
+            """,
+            (user_id,),
+        )
+
+
+def revoke_token_family(db_path: Path, family_id: str) -> None:
+    """Revoke all tokens in a given family (reuse detection)."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE refresh_tokens
+            SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE family_id = ? AND revoked_at IS NULL
+            """,
+            (family_id,),
+        )
+
+
+# ── Audit log ───────────────────────────────────────────────────────────
+
+def audit_log_insert(
+    db_path: Path,
+    *,
+    user_id: int | None = None,
+    action: str,
+    resource: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    details: str | None = None,
+) -> None:
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO audit_log (user_id, action, resource, ip_address, user_agent, details)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, action, resource, ip_address, user_agent, details),
+        )

@@ -18,3 +18,7 @@ torchvision==0.28.0
 faiss-cpu==1.15.0
 slowapi==0.1.9
 limits>=3.14.0
+# Auth dependencies
+argon2-cffi==25.1.0
+PyJWT==2.13.0
+email-validator==2.3.0

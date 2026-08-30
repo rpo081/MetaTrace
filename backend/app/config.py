@@ -9,7 +9,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore",
+        populate_by_name=True,
+    )
 
     # Local mirror of the network share (mounted read-only inside the container).
     store_path: Path = Field(
@@ -49,6 +52,18 @@ class Settings(BaseSettings):
     thumb_size: int = 256
     max_upload_mb: int = 64
     max_browse_limit: int = 200
+    thumbs_max_files: int = Field(
+        default=100000,
+        validation_alias=AliasChoices("METATRACE_THUMBS_MAX_FILES", "THUMBS_MAX_FILES"),
+        ge=0,
+        description="Max cached thumbnails before LRU eviction (0=unbounded). 100k ≈5GB at 256px.",
+    )
+    snapshot_max_age_hours: int = Field(
+        default=24,
+        validation_alias=AliasChoices("METATRACE_SNAPSHOT_MAX_AGE_HOURS", "SNAPSHOT_MAX_AGE_HOURS"),
+        ge=0,
+        description="Max age in hours before store snapshot is considered stale (0=never stale). Walk fallback.",
+    )
 
     allowed_extensions: str = ".psd,.jpg,.jpeg,.png,.tif,.tiff"
 
@@ -58,6 +73,44 @@ class Settings(BaseSettings):
     admin_token: str | None = Field(
         default=None,
         validation_alias=AliasChoices("METATRACE_ADMIN_TOKEN", "ADMIN_TOKEN"),
+    )
+
+    # ── JWT / auth settings ──────────────────────────────────────────────
+    jwt_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("METATRACE_JWT_SECRET", "JWT_SECRET"),
+    )
+    access_token_ttl_minutes: int = 15
+    refresh_token_ttl_days: int = 7
+    max_failed_attempts: int = 5
+    lockout_duration_minutes: int = 15
+    cookie_secure: bool = True
+    cookie_same_site: str = "lax"
+
+    @field_validator("jwt_secret", mode="before")
+    @classmethod
+    def _jwt_secret_blank_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("jwt_secret", mode="after")
+    @classmethod
+    def _jwt_secret_min_length(cls, value: str | None) -> str | None:
+        if value is not None and len(value) < 32:
+            raise ValueError(
+                "jwt_secret must be at least 32 characters for HS256 security"
+            )
+        return value
+
+    # When True, unauthenticated access is allowed (trusted-LAN mode).
+    # Must be explicitly opted-in; unset admin_token alone no longer grants
+    # open access (M-2 security fix).
+    allow_unauthenticated: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("METATRACE_ALLOW_UNAUTH", "ALLOW_UNAUTH"),
     )
 
     # Comma-separated list of allowed CORS origins, e.g. "http://localhost:5173".

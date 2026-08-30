@@ -209,12 +209,20 @@ Admin UI: from the browser console run `localStorage.setItem('metatrace_admin_to
 
 ## Security posture
 
+- **Authentication** is JWT (HS256, 15 min) with opaque refresh tokens in
+  httpOnly+SameSite=Lax cookies scoped to `/api/auth/refresh`. Refresh tokens
+  are rotated on every use and stored as SHA-256 hashes; reuse revokes the
+  entire token family. Passwords are hashed with Argon2id (OWASP 2026 params).
+  Role-based access control: `admin` / `editor` / `viewer`. Set
+  `METATRACE_JWT_SECRET` (≥32 chars) for any internet-facing deployment —
+  without it the app falls back to a trusted-LAN / single-tenant mode that
+  must not be exposed.
 - No CORS by default (the bundled SPA is same-origin). Set
   `METATRACE_CORS_ORIGINS` (comma-separated) only if you serve the UI from a
   different origin.
 - Security headers on every response: `X-Content-Type-Options: nosniff`,
-  `Content-Security-Policy: default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'`,
-  `Referrer-Policy: no-referrer`.
+  `Content-Security-Policy: default-src 'self'; script-src 'self'; img-src 'self' blob:; style-src 'self'; frame-ancestors 'none'`,
+  `Cross-Origin-Resource-Policy: same-origin`, `Referrer-Policy: no-referrer`.
 - Uploads are streamed and aborted with `413` as soon as they exceed
   `MAX_UPLOAD_MB`; error responses are generic (details go to server logs).
 - The container runs the server as the unprivileged `appuser`; the entrypoint
@@ -249,6 +257,14 @@ Environment variables (or `.env`, see `.env.example`):
 | `ALLOWED_EXTENSIONS` | `.psd,.jpg,.jpeg,.png,.tif,.tiff` | indexed formats |
 | `METATRACE_ADMIN_TOKEN` | — | require `X-Admin-Token` on mutating rescan endpoints; empty = trusted-LAN mode |
 | `METATRACE_CORS_ORIGINS` | — | comma-separated CORS origins; empty = no CORS (same-origin SPA) |
+| `METATRACE_JWT_SECRET` | — | HS256 signing secret for access tokens. **Required when running internet-facing.** Min 32 chars. Generate with `python -c "import secrets; print(secrets.token_urlsafe(64))"`. Unset = single-server trusted-LAN mode (X-Admin-Token + open registration) |
+| `METATRACE_COOKIE_SECURE` | `true` | set the `Secure` flag on auth cookies. Set to `false` for local HTTP dev only |
+| `METATRACE_COOKIE_SAMESITE` | `lax` | SameSite attribute for auth cookies; `lax` blocks cross-site POSTs (recommended) |
+| `METATRACE_REFRESH_TOKEN_TTL_DAYS` | `7` | refresh-token lifetime in days |
+| `METATRACE_ACCESS_TOKEN_TTL_MINUTES` | `15` | access-token lifetime in minutes |
+| `METATRACE_LOCKOUT_THRESHOLD` | `5` | failed logins before account lock |
+| `METATRACE_LOCKOUT_MINUTES` | `15` | lockout duration in minutes |
+| `METATRACE_ALLOW_UNAUTH` | `false` | trusted-LAN escape hatch: when `true` and no JWT secret is set, mutating endpoints accept no auth. **Must be `false` for internet-facing deployments** |
 
 ## Performance notes
 

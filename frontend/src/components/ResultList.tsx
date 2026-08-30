@@ -1,3 +1,4 @@
+import { authenticatedUrl } from '../api'
 import type { BrowseImage, SearchResult } from '../types'
 
 interface Props {
@@ -99,7 +100,7 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
             >
               <img
                 className="list-thumb"
-                src={r.thumb_url}
+                src={authenticatedUrl(r.thumb_url)}
                 loading="lazy"
                 alt=""
                 onError={(e) => { e.currentTarget.style.display = 'none' }}

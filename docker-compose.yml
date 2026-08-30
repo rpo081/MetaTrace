@@ -21,6 +21,10 @@ services:
       METATRACE_MAX_PIXELS: ${METATRACE_MAX_PIXELS:-100000000}
       # Mutating-endpoint guard (X-Admin-Token header); empty = trusted-LAN mode.
       METATRACE_ADMIN_TOKEN: ${METATRACE_ADMIN_TOKEN:-}
+      # JWT secret (HS256) — required for authenticated mode; unset + ALLOW_UNAUTH=false -> startup warns (see main.py).
+      METATRACE_JWT_SECRET: ${METATRACE_JWT_SECRET:-}
+      METATRACE_ALLOW_UNAUTH: ${METATRACE_ALLOW_UNAUTH:-false}
+      METATRACE_COOKIE_SECURE: ${METATRACE_COOKIE_SECURE:-true}
       # Extra CORS origins (comma-separated); empty = no CORS middleware.
       METATRACE_CORS_ORIGINS: ${METATRACE_CORS_ORIGINS:-}
     volumes:

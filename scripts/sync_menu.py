@@ -520,7 +520,18 @@ def run_flow(settings: Settings, dry_run: bool) -> None:
 
 def _enable_windows_ansi() -> None:
     """Enable ANSI escape sequence handling in Windows consoles."""
-    os.system("")
+    # No-op on non-Windows; on Windows use SetConsoleMode via ctypes instead of os.system
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -56,6 +56,46 @@ async function parseError(res: Response): Promise<never> {
   throw new ApiError(res.status, friendlyErrorMessage(res.status, detail))
 }
 
+/** localStorage keys — kept for backwards compat; XSS risk noted in D-1. */
+const ADMIN_TOKEN_KEY = 'metatrace_admin_token'
+const ACCESS_TOKEN_KEY = 'metatrace_access_token'
+
+function getAdminToken(): string | null {
+  try {
+    return localStorage.getItem(ADMIN_TOKEN_KEY)
+  } catch {
+    return null // storage unavailable (privacy mode etc.)
+  }
+}
+
+function getAccessToken(): string | null {
+  try {
+    return localStorage.getItem(ACCESS_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
+  const access = getAccessToken()
+  if (access) {
+    headers['Authorization'] = `Bearer ${access}`
+  } else {
+    const token = getAdminToken()
+    if (token) headers['X-Admin-Token'] = token
+  }
+  return headers
+}
+
+export function authenticatedUrl(url: string): string {
+  // Append token as query param for <img src> which cannot send headers
+  const token = getAccessToken() || getAdminToken()
+  if (!token) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}token=${encodeURIComponent(token)}`
+}
+
 export async function searchImage(
   file: File | null,
   k: number,
@@ -78,6 +118,7 @@ export async function searchImage(
   }
   const res = await fetch(`/api/search?${params.toString()}`, {
     method: 'POST',
+    headers: authHeaders(),
     body: form,
     signal,
   })
@@ -86,67 +127,44 @@ export async function searchImage(
 }
 
 export async function getStats(signal?: AbortSignal): Promise<Stats> {
-  const res = await fetch('/api/stats', { signal })
+  const res = await fetch('/api/stats', { headers: authHeaders(), signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }
 
-/** localStorage key holding the admin token sent as X-Admin-Token. */
-const ADMIN_TOKEN_KEY = 'metatrace_admin_token'
-
-function getAdminToken(): string | null {
-  try {
-    return localStorage.getItem(ADMIN_TOKEN_KEY)
-  } catch {
-    return null // storage unavailable (privacy mode etc.)
-  }
-}
-
 export async function triggerRescan(rebuild = false, useDelta = true): Promise<void> {
-  const headers: Record<string, string> = {}
-  const token = getAdminToken()
-  if (token) headers['X-Admin-Token'] = token
   const res = await fetch(
     `/api/rescan?rebuild=${rebuild}&use_delta=${useDelta}`,
-    { method: 'POST', headers },
+    { method: 'POST', headers: authHeaders() },
   )
   if (!res.ok) await parseError(res)
 }
 
 export async function pauseRescan(): Promise<void> {
-  const headers: Record<string, string> = {}
-  const token = getAdminToken()
-  if (token) headers['X-Admin-Token'] = token
-  const res = await fetch('/api/rescan/pause', { method: 'POST', headers })
+  const res = await fetch('/api/rescan/pause', { method: 'POST', headers: authHeaders() })
   if (!res.ok) await parseError(res)
 }
 
 export async function resumeRescan(): Promise<void> {
-  const headers: Record<string, string> = {}
-  const token = getAdminToken()
-  if (token) headers['X-Admin-Token'] = token
-  const res = await fetch('/api/rescan/resume', { method: 'POST', headers })
+  const res = await fetch('/api/rescan/resume', { method: 'POST', headers: authHeaders() })
   if (!res.ok) await parseError(res)
 }
 
 export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaResponse> {
-  const res = await fetch('/api/rescan-delta', { signal })
+  const res = await fetch('/api/rescan-delta', { headers: authHeaders(), signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }
 
 export async function getStoreSnapshotSettings(signal?: AbortSignal): Promise<StoreSnapshotSettings> {
-  const res = await fetch('/api/settings/store-snapshot', { signal })
+  const res = await fetch('/api/settings/store-snapshot', { headers: authHeaders(), signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }
 export async function runStoreSnapshot(): Promise<StoreSnapshotRunResult> {
-  const headers: Record<string, string> = {}
-  const token = getAdminToken()
-  if (token) headers['X-Admin-Token'] = token
   const res = await fetch('/api/settings/store-snapshot/run', {
     method: 'POST',
-    headers,
+    headers: authHeaders(),
   })
   if (!res.ok) await parseError(res)
   return res.json()
@@ -177,7 +195,7 @@ export async function browseImages(
       sp.set(k, String(v))
     }
   }
-  const res = await fetch(`/api/images?${sp.toString()}`, { signal })
+  const res = await fetch(`/api/images?${sp.toString()}`, { headers: authHeaders(), signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }

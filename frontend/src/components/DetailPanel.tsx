@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { authenticatedUrl } from '../api'
 import type { BrowseImage, SearchResult } from '../types'
 import { CloseIcon, ExternalLinkIcon } from './Icon'
 
@@ -18,7 +19,21 @@ function fmtValue(v: unknown): string {
 function detailThumbnailUrl(thumbUrl: string): string {
   const url = new URL(thumbUrl, window.location.origin)
   url.searchParams.set('size', '512')
-  return `${url.pathname}${url.search}`
+  // authenticatedUrl appends token; do it after setting size
+  const raw = `${url.pathname}${url.search}`
+  // inline to avoid circular import at top-level; dynamic import via helper
+  try {
+    const token = (() => {
+      try {
+        return localStorage.getItem('metatrace_access_token') || localStorage.getItem('metatrace_admin_token')
+      } catch { return null }
+    })()
+    if (token) {
+      url.searchParams.set('token', token)
+      return `${url.pathname}${url.search}`
+    }
+  } catch { /* ignore */ }
+  return raw
 }
 
 function matchesXmpAttribute(key: string, attribute: string): boolean {
@@ -192,8 +207,8 @@ export default function DetailPanel({ result, onClose }: Props) {
         <div className="kv">
           <span className="k">Open</span>
           <span className="v">
-            <a href={result.file_url} target="_blank" rel="noreferrer">
-              original file <ExternalLinkIcon width="12" height="12" style={{ display: 'inline', verticalAlign: 'middle' }} />
+            <a href={authenticatedUrl(result.file_url)} target="_blank" rel="noreferrer">
+              original file <ExternalLinkIcon width="12" height="12" className="icon-inline" />
             </a>
           </span>
         </div>

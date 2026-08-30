@@ -105,19 +105,27 @@ def test_reset(tmp_path):
 
 def test_init_db_disables_wal_churn_for_short_read_connections(tmp_path):
     p = tmp_path / "wal.db"
-    with sqlite3.connect(p) as conn:
-        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-        assert mode.lower() == "wal"
-
     db.init_db(p)
     with sqlite3.connect(p) as conn:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    assert mode.lower() == "delete"
+    assert mode.lower() == "wal"
 
+    # short read helpers must not downgrade the journal mode
     db.count(p)
     db.kv_get(p, "last_scan")
-    assert not p.with_suffix(".db-wal").exists()
-    assert not p.with_suffix(".db-shm").exists()
+    with sqlite3.connect(p) as conn:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "wal"
+
+    # configure_journal=False must leave an existing mode untouched
+    p2 = tmp_path / "wal2.db"
+    with sqlite3.connect(p2) as conn:
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("CREATE TABLE t(x INTEGER)")
+    db.init_db(p2, configure_journal=False)
+    with sqlite3.connect(p2) as conn:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "delete"
 
 
 def test_update_original_paths(tmp_path):

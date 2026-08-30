@@ -503,8 +503,25 @@ class Indexer:
                 self.index = None
             return
         tmp = self.settings.index_file.with_suffix(".faiss.tmp")
+        self.settings.data_path.mkdir(parents=True, exist_ok=True)
         faiss.write_index(index, str(tmp))
+        # durability: fsync file before atomic replace so a crash
+        # cannot leave a half-written index (critical at 200k ~400MB)
+        try:
+            with open(tmp, "rb") as fh:
+                os.fsync(fh.fileno())
+        except OSError:
+            log.warning("fsync failed for %s", tmp, exc_info=True)
         tmp.replace(self.settings.index_file)
+        # fsync directory to persist the rename on POSIX
+        try:
+            dir_fd = os.open(str(self.settings.data_path), os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
         with self._lock:
             self.index = index
 
@@ -747,6 +764,19 @@ class Indexer:
                 found[rel] = DiskFile(rel, ap, st.st_size, st.st_mtime)
         return found
 
+    def _is_snapshot_stale(self, path: Path, payload: dict | None = None) -> bool:
+        max_age_hours = getattr(self.settings, "snapshot_max_age_hours", 0)
+        if not max_age_hours or max_age_hours <= 0:
+            return False
+        max_age_sec = max_age_hours * 3600
+        try:
+            age_file = time.time() - path.stat().st_mtime
+            if age_file > max_age_sec:
+                return True
+        except OSError:
+            return False
+        return False
+
     def _load_snapshot_inventory(self) -> dict[str, DiskFile] | None:
         if not self.settings.use_store_snapshot_for_initial_scan:
             return None
@@ -758,6 +788,17 @@ class Indexer:
                 payload = json.load(fh)
         except Exception as exc:  # noqa: BLE001
             log.warning("could not read store snapshot %s: %s", path.name, exc)
+            return None
+
+        if self._is_snapshot_stale(path, payload if isinstance(payload, dict) else None):
+            try:
+                age = round(time.time() - path.stat().st_mtime, 1)
+            except OSError:
+                age = -1
+            log.warning(
+                "store snapshot %s is stale (age=%.1fs > %dh); falling back to walk",
+                path.name, age, self.settings.snapshot_max_age_hours,
+            )
             return None
 
         entries = payload.get("files") if isinstance(payload, dict) and "files" in payload else payload
