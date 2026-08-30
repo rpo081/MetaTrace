@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # docker-build-push.sh — Multi-arch CPU build & push to GHCR
 # Platforms: linux/amd64 (Linux x64, macOS Intel) + linux/arm64 (macOS Apple Silicon)
-# Usage: ./docker-build-push.sh [tag] [username]
-#        Ohne Args: Tag = git tag bzw. Short-SHA, Username = gh CLI Login
+#
+# Usage:
+#   ./docker-build-push.sh                     # git tag/SHA + gh CLI username
+#   ./docker-build-push.sh v1.0.0              # explicit tag, gh CLI username
+#   ./docker-build-push.sh v1.0.0 rpo081       # explicit tag + username
+#   ./docker-build-push.sh "" rpo081           # git tag/SHA, explicit username
+#
+# Requires: docker buildx, gh CLI (for auto username detection)
 
 set -euo pipefail
 
