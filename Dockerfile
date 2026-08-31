@@ -7,8 +7,13 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ---------- stage 2: python runtime (CUDA-capable torch, CPU FAISS) ----------
+# ---------- stage 2: python runtime (CPU torch, CPU FAISS) ----------
 FROM python:3.12-slim AS runtime
+
+# Build arg to switch between CUDA and CPU torch wheels.
+# GPU build:  --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+# CPU build:  --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 # exiftool provides embedded XMP extraction; curl serves the HEALTHCHECK.
 RUN apt-get update \
@@ -17,7 +22,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --extra-index-url ${TORCH_INDEX_URL} -r requirements.txt
 
 # Bake CLIP weights into the image so the first start needs no network.
 # HF_HOME moves the cache out of /root (mode 0700): the runtime user must be

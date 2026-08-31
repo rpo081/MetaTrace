@@ -1,11 +1,8 @@
 # Exact pins (tested set). Reproducible builds; bump deliberately.
 #
-# CUDA-torch note: the --extra-index-url below is ADDITIVE to PyPI. Pinning
-# torch to an exact version makes pip compare candidates across indexes, and
-# the cu128 index provides the CUDA-enabled wheel used for CLIP embeddings.
-# The NVIDIA driver must be exposed to the container (docker-compose.yml
-# reserves a GPU). FAISS remains CPU in this project via faiss-cpu.
---extra-index-url https://download.pytorch.org/whl/cu128
+# The torch index URL is NOT set here — the Dockerfile passes it via build arg
+# (TORCH_INDEX_URL). For local pip installs outside Docker, set the env var or
+# pass --extra-index-url manually.
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 python-multipart==0.0.32
@@ -19,3 +16,9 @@ torch==2.13.0
 # Never imported directly, but a hard transitive dependency of open_clip_torch.
 torchvision==0.28.0
 faiss-cpu==1.15.0
+slowapi==0.1.9
+limits==3.14.0
+# Auth dependencies
+argon2-cffi==25.1.0
+PyJWT==2.13.0
+email-validator==2.3.0

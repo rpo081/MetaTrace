@@ -142,7 +142,7 @@ def test_initial_scan_can_use_store_snapshot_inventory(env, monkeypatch):
         "file_count": 1,
         "files": {"a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size}},
     }
-    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    s.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
 
@@ -167,11 +167,47 @@ def test_non_initial_full_scan_can_use_store_snapshot_inventory(env, monkeypatch
             "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
         },
     }
-    s.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    s.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
 
     rep = ix.incremental(trigger="rescan")
+    assert rep.added == 1
+    assert ix.status["inventory_source"] == "snapshot"
+
+
+def test_delta_scan_uses_store_snapshot_metadata(env, monkeypatch):
+    ix, store, s = env
+    _png(store / "a.png", (5, 5, 5))
+    ix.incremental(trigger="seed")
+    _png(store / "b.png", (6, 6, 6))
+    s.ensure_dirs()
+    snapshot = {
+        "version": 1,
+        "created_utc": "2026-08-25T00:00:00Z",
+        "root_path": str(store),
+        "file_count": 2,
+        "files": {
+            "a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size},
+            "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
+        },
+    }
+    s.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    monkeypatch.setattr(ix, "_walk_store", lambda pause=None: pytest.fail("walk should be skipped"))
+    original_exists = indexer_mod.Path.exists
+
+    def exists_without_delta_file_stat(self):
+        if self == store / "b.png":
+            pytest.fail("delta scan should use snapshot metadata instead of probing the changed file")
+        return original_exists(self)
+
+    monkeypatch.setattr(indexer_mod.Path, "exists", exists_without_delta_file_stat)
+
+    rep = ix.incremental(
+        trigger="delta",
+        delta_info={"changes": {"created": ["b.png"], "modified": [], "deleted": []}},
+    )
     assert rep.added == 1
     assert ix.status["inventory_source"] == "snapshot"
 
@@ -229,17 +265,20 @@ def test_corrupt_index_quarantined_and_rebuilt(env, tmp_path, caplog):
     assert s.index_file.exists()
 
 
-def test_count_mismatch_forces_rebuild(env, monkeypatch):
-    """ntotal != db rows (crash between upsert and add_with_ids) -> rebuild."""
+def test_db_ahead_divergence_is_repaired_surgically(env):
+    """DB rows whose vector never made it into the index (crash between
+    upsert and add_with_ids) get pruned; everything else survives. A restart
+    must NOT wipe the whole index (that caused the rescan-from-zero loop)."""
     from backend.app import db
 
     ix, store, s = env
     _png(store / "a.png", (4, 4, 4))
     ix.incremental(trigger="t")
+    original_id = db.list_entries(s.db_path)["a.png"].id
     assert ix.count == 1
 
     # Simulate divergence: a DB row whose vector never made it into the index.
-    row_id = db.upsert_image(
+    db.upsert_image(
         s.db_path,
         rel_path="ghost.png",
         original_path="ghost.png",
@@ -252,11 +291,171 @@ def test_count_mismatch_forces_rebuild(env, monkeypatch):
     )
     assert db.count(s.db_path) == 2 and ix.count == 1
 
-    ix.load_or_create()  # detects mismatch, resets DB + index
-    assert ix.count == 0 and db.count(s.db_path) == 0
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
 
-    rep = ix.incremental(trigger="heal")
-    assert rep.added == 1 and ix.count == 1
+    # Surgical repair: ghost row gone, real data untouched (same id => no wipe).
+    assert db.count(s.db_path) == 1
+    assert db.list_entries(s.db_path)["a.png"].id == original_id
+    assert ix2.count == 1
+    assert s.index_file.exists()
+
+    rep = ix2.incremental(trigger="heal")
+    assert rep.added == 0 and rep.failed == 0
+
+
+def test_orphan_vectors_are_removed_on_boot(env):
+    """Vector ids without a DB row are dropped at startup (legacy/corrupt
+    states); search can never return ids the DB cannot resolve."""
+    import faiss
+
+    from backend.app import db
+
+    ix, store, s = env
+    _png(store / "a.png", (7, 7, 7))
+    ix.incremental(trigger="t")
+    assert ix.count == 1
+
+    # Remove the DB row behind the published index's back.
+    db.remove_ids(s.db_path, [db.list_entries(s.db_path)["a.png"].id])
+
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+    assert ix2.count == 0
+    assert db.count(s.db_path) == 0
+    assert int(faiss.vector_to_array(ix2.index.id_map).size) == 0
+
+
+def test_id_sets_diverged_with_equal_counts_still_repaired(env):
+    """Equal counts but different ids (e.g. re-created DB rows) must not pass
+    a pure count compare — the sets themselves have to match."""
+    from backend.app import db
+
+    ix, store, s = env
+    _png(store / "a.png", (8, 8, 8))
+    ix.incremental(trigger="t")
+    old_id = db.list_entries(s.db_path)["a.png"].id
+
+    # Recreate the row: AUTOINCREMENT assigns a different id, count stays 1.
+    conn = __import__("sqlite3").connect(s.db_path)
+    with conn:
+        conn.execute("DELETE FROM images")
+    conn.close()
+    db.upsert_image(
+        s.db_path,
+        rel_path="a.png",
+        original_path="a.png",
+        size=(store / "a.png").stat().st_size,
+        mtime=(store / "a.png").stat().st_mtime,
+        sha256=None,
+        width=8,
+        height=8,
+        xmp={},
+    )
+    new_id = db.list_entries(s.db_path)["a.png"].id
+    assert new_id != old_id
+
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+    # Old vector id removed; row pruned too (its id has no vector) -> empty,
+    # and the next scan re-embeds the file cleanly.
+    assert ix2.count == 0 and db.count(s.db_path) == 0
+    rep = ix2.incremental(trigger="heal")
+    assert rep.added == 1 and ix2.count == 1
+
+
+def test_interrupted_scan_loses_at_most_one_chunk(env, monkeypatch):
+    """A scan killed mid-run must not doom the next startup to a full rebuild:
+    periodic publishes keep the persisted index near the per-chunk DB commits,
+    startup repairs the remainder surgically."""
+    ix, store, s = env
+    monkeypatch.setattr(indexer_mod, "PUBLISH_INTERVAL_SEC", 0.0)
+    ix.settings.batch_size = 1  # one file per chunk so the crash lands between files
+    _png(store / "a.png", (1, 0, 0))
+    ix.incremental(trigger="seed")
+    from backend.app import db
+
+    seed_id = db.list_entries(s.db_path)["a.png"].id
+
+    _png(store / "b.png", (2, 0, 0))
+    _png(store / "c.png", (3, 0, 0))
+
+    original_process = ix._process_chunk
+    calls = {"n": 0}
+
+    def crashing_process(*args, **kwargs):
+        result = original_process(*args, **kwargs)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash after first chunk")
+        return result
+
+    monkeypatch.setattr(ix, "_process_chunk", crashing_process)
+    with pytest.raises(RuntimeError):
+        ix.incremental(trigger="doomed")
+
+    # Restart with a fresh instance, exactly like a container restart.
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+    # b.png was fully committed+published before the crash -> survives.
+    assert ix2.count == 2
+    assert {"a.png", "b.png"} == set(db.list_entries(s.db_path))
+    assert db.list_entries(s.db_path)["a.png"].id == seed_id
+
+    rep = ix2.incremental(trigger="continue")
+    assert rep.added == 1            # only c.png left to embed
+    assert ix2.count == 3
+
+
+def test_long_scan_publishes_progress_periodically(env, monkeypatch):
+    ix, store, s = env
+    monkeypatch.setattr(indexer_mod, "PUBLISH_INTERVAL_SEC", 0.0)
+    for n in range(3):
+        _png(store / f"p{n}.png", (n, 0, 0))
+
+    published = []
+    original_publish = ix._publish_index
+
+    def spying_publish(index):
+        published.append(int(index.ntotal) if index is not None else 0)
+        return original_publish(index)
+
+    monkeypatch.setattr(ix, "_publish_index", spying_publish)
+    ix.incremental(trigger="progressive")
+
+    # First chunk publishes immediately (throttle starts at -inf), final
+    # publish closes the scan; nothing in between may skip publishing here
+    # because every chunk is due again at interval=0.
+    assert len(published) >= 2
+    assert published[-1] == 3
+
+
+def test_decode_downscales_but_keeps_original_dimensions(env, monkeypatch):
+    """Scan-time decode shrinks frames before they enter the prefetch window
+    (OOM guard for 100+ Mpixel renders) while DB rows keep the ORIGINAL
+    dimensions."""
+    ix, store, s = env
+    from backend.app import db
+
+    real_embed = indexer_mod.embeddings.embed_images
+    sizes_seen: list[tuple[int, int]] = []
+
+    def spy_embed(images, settings):
+        sizes_seen.extend(img.size for img in images)
+        return real_embed(images, settings)
+
+    monkeypatch.setattr(indexer_mod.embeddings, "embed_images", spy_embed)
+
+    Image.new("RGB", (2000, 1000), (9, 9, 9)).save(store / "big.png")
+    rep = ix.incremental(trigger="t")
+    assert rep.added == 1
+
+    assert sizes_seen and all(
+        w <= indexer_mod.SCAN_DECODE_MAX_SIDE and h <= indexer_mod.SCAN_DECODE_MAX_SIDE
+        for w, h in sizes_seen
+    )
+    row = db.get_by_id(s.db_path, db.list_entries(s.db_path)["big.png"].id)
+    assert (row["width"], row["height"]) == (2000, 1000)
 
 
 def test_scan_never_mutates_published_index(env):
@@ -451,7 +650,7 @@ def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
             "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
         },
     }
-    settings.store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+    settings.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     checkpoint_path = settings.data_path / "scan_checkpoint.json"
     checkpoint_path.write_text(
@@ -485,3 +684,133 @@ def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
     assert decoded == ["b.png"]
     assert resumed.status["inventory_source"] == "snapshot"
     assert not checkpoint_path.exists()
+
+
+def test_stale_planning_checkpoint_is_discarded_on_boot(env, caplog):
+    """A crash/restart mid-scan leaves a 'planning'-phase checkpoint behind.
+    Booting with it must NOT flip the app into a phantom 'paused' state:
+    that blocked RUN_INITIAL_SCAN_ON_START (trigger_now refuses while paused)
+    and made every container restart look like a rescan stuck at zero."""
+    import logging
+
+    ix, store, settings = env
+    _png(store / "a.png", (1, 1, 1))
+    ix.incremental(trigger="seed")
+    settings.ensure_dirs()
+    checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    checkpoint_path.write_text(
+        '{"version":1,"phase":"planning","mode":"full","force_rebuild":false,'
+        '"trigger":"manual-api","model":"ViT-B-32-quickgelu:openai",'
+        '"report":{"trigger":"manual-api","started_at":1.0,"duration_sec":0.0,'
+        '"seen":0,"processed":0,"added":0,"updated":0,"removed":0,'
+        '"unchanged":0,"failed":0,"error_count":0},'
+        '"delta_info":null,'
+        '"updated_at":"2026-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+
+    ix2 = indexer_mod.Indexer(settings)
+    with caplog.at_level(logging.INFO):
+        ix2.load_or_create()
+    assert ix2.status["state"] == "idle"
+    assert not checkpoint_path.exists()
+    assert any("discarding stale" in r.getMessage() for r in caplog.records)
+
+    # Auto initial scan (or manual rescan) can start right away.
+    rep = ix2.incremental(trigger="initial-scan")
+    assert rep.unchanged == 1 and rep.failed == 0
+    assert ix2.status["state"] == "idle"
+
+
+def test_resume_replay_of_committed_files_does_not_duplicate(env):
+    """Resume from a STALE checkpoint replays files the crashed run had
+    already committed+published (after the last pause snapshot). Re-adding
+    them must not leave two vectors under one id."""
+    import faiss
+
+    ix, store, settings = env
+    _png(store / "a.png", (1, 1, 1))
+    ix.incremental(trigger="seed")
+    _png(store / "b.png", (2, 2, 2))
+    settings.ensure_dirs()
+    snapshot = {
+        "version": 1,
+        "created_utc": "2026-08-26T00:00:00Z",
+        "root_path": str(store),
+        "file_count": 2,
+        "files": {
+            "a.png": {"mtime": 123.0, "size": (store / "a.png").stat().st_size},
+            "b.png": {"mtime": 124.0, "size": (store / "b.png").stat().st_size},
+        },
+    }
+    settings.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    # Stale checkpoint: b.png listed as remaining "added" work, although a
+    # later chunk of the crashed run already committed+published it.
+    checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    checkpoint_path.write_text(
+        '{"version":1,"phase":"pending","mode":"full","force_rebuild":false,'
+        '"trigger":"resume-test","model":"ViT-B-32-quickgelu:openai",'
+        '"report":{"trigger":"resume-test","started_at":1.0,"duration_sec":0.0,'
+        '"seen":2,"processed":1,"added":1,"updated":0,"removed":0,'
+        '"unchanged":0,"failed":0,"error_count":0},'
+        '"remaining_rel_paths":["b.png"],"remaining_added_rel_paths":["b.png"],'
+        '"updated_at":"2026-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+
+    resumed = indexer_mod.Indexer(settings)
+    resumed.load_or_create()
+    assert resumed.status["state"] == "paused"
+    resumed.resume_from_checkpoint()
+
+    ids = [int(i) for i in faiss.vector_to_array(resumed.index.id_map)]
+    assert len(ids) == len(set(ids)) == 2   # one vector per file, no dupes
+    assert resumed.count == 2
+
+
+def test_boot_repair_deduplicates_existing_duplicate_vectors(env):
+    """Legacy indexes with two vectors under one id (pre-fix resume replay)
+    are cleaned at startup: all copies dropped + row pruned -> clean re-embed."""
+    import faiss
+    import numpy as np
+
+    from backend.app import db
+
+    ix, store, s = env
+    _png(store / "a.png", (3, 3, 3))
+    ix.incremental(trigger="seed")
+
+    # Corrupt the persisted index the way old resume replays did.
+    idx = faiss.read_index(str(s.index_file))
+    row_id = db.list_entries(s.db_path)["a.png"].id
+    vec = np.zeros((1, 16), dtype="float32")
+    idx.add_with_ids(vec, np.array([row_id], dtype="int64"))
+    faiss.write_index(idx, str(s.index_file))
+    assert int(idx.ntotal) == 2 and len(faiss.vector_to_array(idx.id_map)) == 2
+
+    ix2 = indexer_mod.Indexer(s)
+    ix2.load_or_create()
+
+    assert ix2.count == 0                      # both copies gone...
+    assert db.count(s.db_path) == 0            # ...and row pruned for re-embed
+    rep = ix2.incremental(trigger="heal")
+    assert rep.added == 1 and ix2.count == 1
+
+
+def test_scan_report_speed_metrics():
+    report = indexer_mod.ScanReport(
+        trigger="test",
+        started_at=time.time() - 60.0,
+        duration_sec=60.0,
+        seen=120,
+        processed=120,
+        added=30,
+        updated=30,
+    )
+    d = report.as_dict()
+    assert d["elapsed_sec"] == 60.0
+    assert d["scans_per_min"] == 120.0
+    assert d["embeddings_per_min"] == 60.0
+    assert d["scans_per_sec"] == 2.0
+    assert d["embeddings_per_sec"] == 1.0

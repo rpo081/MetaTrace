@@ -5,17 +5,20 @@ its metadata: original network path and embedded XMP tags. Matches cover exact
 byte-identical copies, resized/re-encoded variants, and visually similar images.
 
 ```
-CIFS share (network) ──scripts/sync_images.py──> local SSD store ──indexer──> SQLite + FAISS
+CIFS share (network) ──scripts/network_to_local_copy.py──> local SSD store ──indexer──> SQLite + FAISS
                                                                                    ▲
 React UI (drag & drop) ──> FastAPI  /api/search  (upload → CLIP embed → top-K) ────┘
 ```
 
 - **Backend**: FastAPI + CLIP (`open_clip`, ViT-B-32 QuickGELU, OpenAI weights,
-  `DEVICE=auto` with CUDA when available) + FAISS flat inner-product index in RAM
-  + SQLite metadata.
+  `DEVICE=cpu` by default; CUDA via GPU compose overlay) + FAISS flat
+  inner-product index in RAM + SQLite metadata.
 - **Frontend**: Vite + React + TS; served as static files by the same container.
-- **Sync**: `scripts/sync_images.py` mirrors the CIFS share to local SSD
-  (incremental, long-path safe, Windows-first).
+- **Mirror / Sync**: `scripts/network_to_local_menu.py` is the preferred
+  Windows UI for maintaining the local SSD mirror; it drives
+  `scripts/network_to_local_copy.py` (incremental, long-path safe, robocopy-based).
+  The older `scripts/sync_images.py` / `scripts/sync_menu.py` pair is still in
+  the repo for the legacy mode-based workflow.
 
 ## Quickstart (Docker)
 
@@ -24,6 +27,14 @@ cp .env.example .env         # set LOCAL_IMAGE_STORE (and NETWORK_ROOT)
 docker compose up -d --build
 # open http://localhost:8000
 ```
+
+> **First-run credentials:** When the users table is empty and `METATRACE_ADMIN_TOKEN`
+> is unset, MetaTrace seeds a single `admin` user with password `changeme` and marks
+> the account `must_change_password=true`. **All endpoints except
+> `/api/auth/change-password`, `/logout`, and `/me` return 403 until the password
+> is changed.** Set `METATRACE_ADMIN_TOKEN` (≥32 chars; e.g.
+> `python -c "import secrets; print(secrets.token_urlsafe(32))"`) **before** the
+> first start to use it as the seed password instead.
 
 The container mounts your local image mirror read-only at `/store`; database,
 FAISS index and thumbnails live under the host bind mount `./data:/data`. On first start an
@@ -44,7 +55,14 @@ The image builds natively for `linux/amd64` (x64 servers, Intel Macs) and
 architecture, so `docker compose up -d --build` works unchanged everywhere.
 
 When an NVIDIA GPU is available to Docker, MetaTrace uses it for CLIP
-embedding (`DEVICE=auto` selects CUDA first). FAISS remains CPU (`faiss-cpu`).
+embedding. FAISS remains CPU (`faiss-cpu`).
+
+The default `docker compose up -d --build` runs CPU-only. For GPU support,
+use the GPU compose overlay:
+
+```bash
+docker compose -f docker-compose.gpu.yml up -d --build
+```
 
 On hosts without an NVIDIA GPU (or for testing uncommitted changes without
 publishing an image), build and run a CPU-only container locally:
@@ -56,15 +74,45 @@ docker compose -f docker-compose.cpu.local.yml up -d --build
 To publish one multi-arch image from a single machine:
 
 ```bash
-./docker-build-push.sh v0.1.0 rpo081   # explicit tag + username
+./docker-build-push.sh v1.0.0 rpo081   # explicit tag + username
 ./docker-build-push.sh                 # defaults: git tag/SHA, gh CLI login
 ```
 
-Both tags (`:v0.1.0` and `:latest`) are pushed as one multi-arch manifest.
-The foreign platform is cross-built under QEMU — first build of the torch and
-CLIP weight layers is slow, later builds hit the layer cache.
+Both tags (`:v1.0.0` and `:latest`) are pushed as one multi-arch manifest.
 
-## Syncing from the network share
+## Network mirror workflow
+
+Preferred Windows workflow:
+
+```powershell
+python scripts\network_to_local_menu.py
+```
+
+`network_to_local_menu.py` persists presets in `~/.metatrace_network_copy.json`
+and lets you configure:
+
+- source and destination folders
+- excluded folder depth
+- excluded source-relative paths
+- excluded folder names
+- allowed image extensions
+- maximum file size
+
+Before copying, the tool prints a cleanup-style summary of detected changes and
+the filtered copy set. During transfer it shows a robocopy-job-based progress
+display in the terminal.
+
+For direct CLI usage, the underlying copy script is:
+
+```powershell
+python scripts\network_to_local_copy.py "D:\imagestore" --source "\\nas\share\renderings"
+```
+
+It keeps a per-share snapshot under `scripts/snapshots/`, detects
+new/changed/deleted files, applies the configured filters, and copies only the
+remaining image files.
+
+## Legacy sync workflow
 
 ```powershell
 python scripts\sync_images.py "\\nas\share\renderings" "D:\imagestore" --mode final --threads 8
@@ -135,14 +183,17 @@ into the image.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /api/search?k=24&min_score=0.1` | multipart `file` upload → ranked results |
-| `GET /api/thumb/{id}?size=512` | cached PNG thumbnail (64–1024 px, alpha preserved) |
+| `POST /api/search?k=24&min_score=0.1` | multipart `file` upload and/or `q` text query → ranked results |
+| `GET /api/thumb/{id}?size=256` | cached PNG thumbnail (default 256 px; accepts 64–1024 px, alpha preserved) |
 | `GET /api/file/{id}` | original file stream |
+| `GET /api/images` | browse/indexed images with pagination, sorting, and filters (ext, folder, size, dimensions, dates, has_xmp) |
 | `POST /api/rescan?rebuild=false&use_delta=true` | trigger scan; uses delta changes when available unless `rebuild=true` |
 | `POST /api/rescan/pause` | request pause for the running scan at the next checkpoint |
 | `POST /api/rescan/resume` | resume a paused scan, including persisted checkpoints after restart |
 | `GET /api/stats` | index/db counts, scan state/report (`seen`, `processed`, etc.), `inventory_source`, model, exiftool status |
 | `GET /api/rescan-delta` | show the latest prepared delta summary, if present |
+| `GET /api/settings/store-snapshot` | return the effective root used by store-snapshot scans |
+| `POST /api/settings/store-snapshot/run` | run a store snapshot scan and refresh `data/store_snapshot_latest.json` |
 | `GET /api/health` | liveness |
 
 Search response: `score` = cosine similarity (exact sha256 hits are pinned to
@@ -173,12 +224,20 @@ Admin UI: from the browser console run `localStorage.setItem('metatrace_admin_to
 
 ## Security posture
 
+- **Authentication** is JWT (HS256, 15 min) with opaque refresh tokens in
+  httpOnly+SameSite=Lax cookies scoped to `/api/auth/refresh`. Refresh tokens
+  are rotated on every use and stored as SHA-256 hashes; reuse revokes the
+  entire token family. Passwords are hashed with Argon2id (OWASP 2026 params).
+  Role-based access control: `admin` / `editor` / `viewer`. Set
+  `METATRACE_JWT_SECRET` (≥32 chars) for any internet-facing deployment —
+  without it the app falls back to a trusted-LAN / single-tenant mode that
+  must not be exposed.
 - No CORS by default (the bundled SPA is same-origin). Set
   `METATRACE_CORS_ORIGINS` (comma-separated) only if you serve the UI from a
   different origin.
 - Security headers on every response: `X-Content-Type-Options: nosniff`,
-  `Content-Security-Policy: default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'`,
-  `Referrer-Policy: no-referrer`.
+  `Content-Security-Policy: default-src 'self'; script-src 'self'; img-src 'self' blob:; style-src 'self'; frame-ancestors 'none'`,
+  `Cross-Origin-Resource-Policy: same-origin`, `Referrer-Policy: no-referrer`.
 - Uploads are streamed and aborted with `413` as soon as they exceed
   `MAX_UPLOAD_MB`; error responses are generic (details go to server logs).
 - The container runs the server as the unprivileged `appuser`; the entrypoint
@@ -192,37 +251,69 @@ Environment variables (or `.env`, see `.env.example`):
 
 | Var | Default | Purpose |
 |---|---|---|
+| `LOCAL_IMAGE_STORE` | — | host path to the local image mirror in `.env`; Docker mounts it read-only to `/store`, and local non-Docker runs also accept it as the store root |
 | `STORE_PATH` | `/store` | local image mirror (read-only) |
 | `DATA_PATH` | `/data` | SQLite + FAISS + thumbnails |
 | `NETWORK_ROOT` | — | e.g. `\\nas\share\renderings`; prefixes `original_path` |
 | `MODEL_NAME` | `ViT-B-32-quickgelu` | open_clip architecture |
 | `MODEL_PRETRAINED` | `openai` | weight source |
-| `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; see macOS note in implementation notes |
-| `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency |
+| `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; docker-compose defaults to `cpu`, use GPU overlay for CUDA |
+| `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency — keep modest for print-resolution renders |
+| `DECODE_WORKERS` | `4` | scan-time threads for image decode + sha256 (PIL/psd-tools) |
+| `DECODE_PREFETCH` | `16` | max decoded images held in memory during a scan chunk (bounded window; frames are downscaled to 512 px in the worker) |
+| `METATRACE_MAX_PIXELS` | `100000000` | hard pixel cap for PSD composite rendering (OOM/decompression-bomb guard) |
 | `RUN_INITIAL_SCAN_ON_START` | `true` | scan at startup when index empty |
 | `USE_STORE_SNAPSHOT_FOR_INITIAL_SCAN` | `true` | prefer `data/store_snapshot_latest.json` over a filesystem walk when building scan inventory |
+| `METATRACE_SNAPSHOT_SCAN_ROOT` | — | optional override for `POST /api/settings/store-snapshot/run`; defaults to the effective image store |
 | `DEFAULT_TOP_K` / `MAX_TOP_K` | `24` / `200` | result count limits |
 | `MIN_SCORE_DEFAULT` | `0.0` | default cosine cutoff |
-| `THUMB_SIZE` | `512` | default thumbnail max side |
+| `THUMB_SIZE` | `256` | default thumbnail max side for result-grid thumbnails |
 | `MAX_UPLOAD_MB` | `64` | query upload limit (streamed, early-abort) |
 | `ALLOWED_EXTENSIONS` | `.psd,.jpg,.jpeg,.png,.tif,.tiff` | indexed formats |
-| `METATRACE_ADMIN_TOKEN` | — | require `X-Admin-Token` on mutating rescan endpoints; empty = trusted-LAN mode |
+| `METATRACE_ADMIN_TOKEN` | — | legacy seed for `X-Admin-Token` / admin password seed; **if set, must be >=32 chars** (`secrets.token_urlsafe(32)`). Empty alone does **not** grant open access — requires `METATRACE_ALLOW_UNAUTH=true` (see `main.py`) |
 | `METATRACE_CORS_ORIGINS` | — | comma-separated CORS origins; empty = no CORS (same-origin SPA) |
+| `METATRACE_TRUSTED_PROXY` | `false` | when `true`, rate limiting trusts `X-Forwarded-For` / `X-Real-IP` (behind nginx/traefik). Leave `false` to avoid spoofing when not behind proxy |
+| `METATRACE_JWT_SECRET` | — | HS256 signing secret for access tokens. **Required when running internet-facing.** Min 32 chars. Generate with `python -c "import secrets; print(secrets.token_urlsafe(64))"`. Unset = single-server trusted-LAN mode (X-Admin-Token + open registration) |
+| `THUMBS_MAX_FILES` / `METATRACE_THUMBS_MAX_FILES` | `100000` | max thumbnails before LRU eviction (`0`=unbounded); 100k ≈5 GB at 256 px |
+| `SNAPSHOT_MAX_AGE_HOURS` / `METATRACE_SNAPSHOT_MAX_AGE_HOURS` | `24` | store snapshot staleness threshold (`0`=never stale); stale triggers filesystem walk |
+| `MAX_BROWSE_LIMIT` | `200` | max `limit` for `GET /api/images` (capped on server) |
+| `METATRACE_COOKIE_SECURE` | `true` | set the `Secure` flag on auth cookies. Set to `false` for local HTTP dev only |
+| `METATRACE_COOKIE_SAMESITE` | `lax` | SameSite attribute for auth cookies; `lax` blocks cross-site POSTs (recommended) |
+| `METATRACE_REFRESH_TOKEN_TTL_DAYS` | `7` | refresh-token lifetime in days |
+| `METATRACE_ACCESS_TOKEN_TTL_MINUTES` | `15` | access-token lifetime in minutes |
+| `METATRACE_LOCKOUT_THRESHOLD` | `5` | failed logins before account lock |
+| `METATRACE_LOCKOUT_MINUTES` | `15` | lockout duration in minutes |
+| `METATRACE_ALLOW_UNAUTH` | `false` | trusted-LAN escape hatch: when `true` and no JWT secret is set, mutating endpoints accept no auth. **Must be `false` for internet-facing deployments** |
 
 ## Performance notes
 
 - Index: 20k × 512 float32 ≈ 40 MB RAM → exact flat search, sub-millisecond queries.
-- Embedding can use CUDA (`DEVICE=auto`) when NVIDIA GPU passthrough is enabled.
+- Embedding can use CUDA when NVIDIA GPU passthrough is enabled (use the GPU
+  compose overlay). FAISS remains CPU (`faiss-cpu`).
 - Rescan time is often dominated by filesystem inventory/stat calls on large
   bind mounts; GPU helps embedding work, not full-tree metadata walks.
-- `scripts/store_snapshot.py` also writes `data/store_snapshot_latest.json`;
-  full scans prefer that snapshot inventory when available, including restart
-  resume paths, to avoid unnecessary filesystem walks.
+- `scripts/store_snapshot.py` writes the baseline snapshot to
+  `data/store_snapshot.json` and refreshes `data/store_snapshot_latest.json`.
+  Initial/full scans prefer the `latest` snapshot inventory when available to
+  avoid unnecessary filesystem walks.
 - `BATCH_SIZE` trades throughput against responsiveness: larger batches reduce
   embedding overhead but increase RAM use, pause latency, and redo work after
   an unclean stop inside a batch.
+- All scan-tuning variables (`BATCH_SIZE`, `DECODE_WORKERS`, `DECODE_PREFETCH`,
+  `METATRACE_MAX_PIXELS`, `DEVICE`) are passed through docker-compose: change
+  them in `.env` and run `docker compose up -d` — the container is recreated,
+  **no image rebuild needed**.
+- Scans pipeline their stages: decode+hash run on `DECODE_WORKERS` threads with
+  at most `DECODE_PREFETCH` decoded images in memory, and XMP extraction
+  (exiftool subprocess) overlaps the GPU/CPU embedding step. Decoded frames are
+  downscaled to `SCAN_DECODE_MAX_SIDE` (512 px) inside the worker — CLIP only
+  consumes 224 px inputs, so full-resolution frames never enter the scan
+  pipeline's memory window. DB rows keep the original width/height. DB writes
+  are batched into one transaction per chunk, and the working index is
+  published periodically (`PUBLISH_INTERVAL_SEC`). On CUDA, embedding runs in
+  fp16 autocast (float32 output) with TF32 matmuls enabled.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
-- Thumbnails are generated once per `(id, size)` and served from disk cache.
+- Thumbnails are generated once per `(id, size)` and served from disk cache. The UI currently uses 256 px for result cards and 512 px for the detail panel.
 
 ## Implementation notes & trade-offs
 
@@ -243,8 +334,12 @@ Environment variables (or `.env`, see `.env.example`):
   capped at 120 s, bounding the worst case per 128-file batch (~4 h including
   per-file retries) instead of hanging a scan indefinitely.
 - **Self-healing index**: on startup the FAISS index is reconciled against the
-  DB (`ntotal` vs row count). A missing or corrupt index file (quarantined as
-  `index.faiss.corrupt`) or any count mismatch forces a loud full rebuild so
-  search results never silently go empty.
+  DB by comparing vector-id and row-id *sets*. Orphan vectors (no DB row) are
+  removed; rows without a vector are pruned so the next scan re-embeds exactly
+  those files. A missing or corrupt index file (quarantined as
+  `index.faiss.corrupt`) still forces a full rebuild. Long scans publish their
+  working index periodically (`PUBLISH_INTERVAL_SEC`, 30 s), so an interrupted
+  container loses at most ~one interval of work instead of the whole scan —
+  restarts never trigger a rescan-from-zero loop.
 - **Exact match** means byte-identical (sha256). Resized variants rank high via
   cosine similarity but are not guaranteed pixel-identical.

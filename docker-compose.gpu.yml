@@ -1,0 +1,41 @@
+services:
+  metatrace:
+    image: ghcr.io/${GHCR_USER:-rpo081}/metatrace:latest
+    container_name: metatrace
+    ports:
+      - "${METATRACE_PORT:-8000}:8000"
+    environment:
+      STORE_PATH: /store
+      DATA_PATH: /data
+      NETWORK_ROOT: ${NETWORK_ROOT:-}
+      RUN_INITIAL_SCAN_ON_START: ${RUN_INITIAL_SCAN_ON_START:-true}
+      DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
+      # Scan throughput tuning — runtime-tunable via .env, no rebuild needed
+      # (`docker compose up -d` recreates the container).
+      BATCH_SIZE: ${BATCH_SIZE:-64}
+      DECODE_WORKERS: ${DECODE_WORKERS:-4}
+      DECODE_PREFETCH: ${DECODE_PREFETCH:-16}
+      # PSD composite pixel cap (OOM guard for huge renders).
+      METATRACE_MAX_PIXELS: ${METATRACE_MAX_PIXELS:-100000000}
+      # Auth: legacy admin token (must be >=32 chars if set) + JWT. Empty admin_token + ALLOW_UNAUTH=false => 401 on mutations (not open).
+      METATRACE_ADMIN_TOKEN: ${METATRACE_ADMIN_TOKEN:-}
+      METATRACE_JWT_SECRET: ${METATRACE_JWT_SECRET:-}
+      METATRACE_ALLOW_UNAUTH: ${METATRACE_ALLOW_UNAUTH:-false}
+      METATRACE_COOKIE_SECURE: ${METATRACE_COOKIE_SECURE:-true}
+      METATRACE_TRUSTED_PROXY: ${METATRACE_TRUSTED_PROXY:-false}
+      # Extra CORS origins (comma-separated); empty = no CORS middleware.
+      METATRACE_CORS_ORIGINS: ${METATRACE_CORS_ORIGINS:-}
+    volumes:
+      # Local SSD mirror of the network share (target of scripts/sync_images.py).
+      # Mounted read-only; the app never writes here.
+      - ${LOCAL_IMAGE_STORE:?Set LOCAL_IMAGE_STORE in .env}:/store:ro
+      # SQLite database, FAISS index, thumbnail cache; accessible on the host.
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped

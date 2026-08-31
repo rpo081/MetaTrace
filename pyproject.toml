@@ -1,6 +1,25 @@
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
-addopts = "-q"
+addopts = "-ra -q"
 filterwarnings = [
     "ignore::DeprecationWarning",
+    "ignore::pytest.PytestCollectionWarning",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C4", "UP"]
+ignore = ["E501"]
+
+[tool.coverage.run]
+source = ["backend/app"]
+omit = ["backend/tests/*"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = false

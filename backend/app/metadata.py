@@ -10,9 +10,9 @@ from typing import Sequence
 
 log = logging.getLogger(__name__)
 
-BATCH_SIZE = 64  # files per exiftool invocation
-# Per-invocation cap. Worst case per 64-file chunk: one batch call + up to 64
-# individual retries = 65 * 120s ≈ 2.2 h (bounded; previously 600s each made a
+BATCH_SIZE = 128  # files per exiftool invocation
+# Per-invocation cap. Worst case per 128-file chunk: one batch call + up to 128
+# individual retries = 129 * 120s ≈ 4.3 h (bounded; previously 600s each made a
 # stuck batch + full retry pass unbounded in practice at ~10.9 h).
 _TIMEOUT_SEC = 120
 

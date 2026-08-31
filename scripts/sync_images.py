@@ -26,8 +26,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 IS_WINDOWS = os.name == "nt"
-ALLOWED_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff"})
-MAX_COPY_SIZE_BYTES = 20 * 1024 * 1024
+# Centralised file-type/size rules (single source of truth: backend/app/file_rules.py)
+try:
+    from backend.app.file_rules import (
+        ALLOWED_EXTENSIONS as _CENTRAL_ALLOWED,
+        MAX_FILE_SIZE_MB as _CENTRAL_MAX_MB,
+        MAX_SEQUENCE_IMAGES as _CENTRAL_MAX_SEQ,  # noqa: F401 — imported to enforce centralisation
+        EXCLUDED_DIR_NAMES as _CENTRAL_EXCLUDED,  # noqa: F401
+    )
+
+    ALLOWED_EXTS = frozenset(e.lower() for e in _CENTRAL_ALLOWED)
+    MAX_COPY_SIZE_BYTES = _CENTRAL_MAX_MB * 1024 * 1024 if _CENTRAL_MAX_MB else 0
+    # Re-export for callers that introspect constants
+    MAX_FILE_SIZE_MB = _CENTRAL_MAX_MB  # type: ignore[no-redef]
+    MAX_SEQUENCE_IMAGES = _CENTRAL_MAX_SEQ  # type: ignore[no-redef]
+    EXCLUDED_DIR_NAMES = _CENTRAL_EXCLUDED  # type: ignore[no-redef]
+except ImportError:
+    ALLOWED_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff"})
+    MAX_COPY_SIZE_BYTES = 20 * 1024 * 1024
 SKIP_DIRS = frozenset({
     "$RECYCLE.BIN",
     "System Volume Information",

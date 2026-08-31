@@ -1,7 +1,6 @@
 services:
   metatrace:
-    build: .
-    image: metatrace:local
+    image: ghcr.io/${GHCR_USER:-rpo081}/metatrace:latest
     container_name: metatrace
     ports:
       - "${METATRACE_PORT:-8000}:8000"
@@ -11,8 +10,22 @@ services:
       NETWORK_ROOT: ${NETWORK_ROOT:-}
       RUN_INITIAL_SCAN_ON_START: ${RUN_INITIAL_SCAN_ON_START:-true}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
-      # Mutating-endpoint guard (X-Admin-Token header); empty = trusted-LAN mode.
+      # Force CPU mode for CLIP embeddings.
+      DEVICE: ${DEVICE:-cpu}
+      # Scan throughput tuning — runtime-tunable via .env, no rebuild needed
+      # (`docker compose up -d` recreates the container).
+      BATCH_SIZE: ${BATCH_SIZE:-64}
+      DECODE_WORKERS: ${DECODE_WORKERS:-4}
+      DECODE_PREFETCH: ${DECODE_PREFETCH:-16}
+      # PSD composite pixel cap (OOM guard for huge renders).
+      METATRACE_MAX_PIXELS: ${METATRACE_MAX_PIXELS:-100000000}
+      # Legacy admin token (deprecated, must be >=32 chars if set).
       METATRACE_ADMIN_TOKEN: ${METATRACE_ADMIN_TOKEN:-}
+      # JWT secret (HS256) — required for authenticated mode; unset + ALLOW_UNAUTH=false -> startup warns (see main.py).
+      METATRACE_JWT_SECRET: ${METATRACE_JWT_SECRET:-}
+      METATRACE_ALLOW_UNAUTH: ${METATRACE_ALLOW_UNAUTH:-false}
+      METATRACE_COOKIE_SECURE: ${METATRACE_COOKIE_SECURE:-true}
+      METATRACE_TRUSTED_PROXY: ${METATRACE_TRUSTED_PROXY:-false}
       # Extra CORS origins (comma-separated); empty = no CORS middleware.
       METATRACE_CORS_ORIGINS: ${METATRACE_CORS_ORIGINS:-}
     volumes:
@@ -21,11 +34,4 @@ services:
       - ${LOCAL_IMAGE_STORE:?Set LOCAL_IMAGE_STORE in .env}:/store:ro
       # SQLite database, FAISS index, thumbnail cache; accessible on the host.
       - ./data:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
     restart: unless-stopped
