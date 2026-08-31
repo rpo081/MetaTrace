@@ -173,6 +173,119 @@ describe('AuthContext', () => {
     expect(getAccessToken()).toBe('rotated-token')
   })
 
+  it('stampede_of_parallel_401s_triggers_exactly_one_refresh', async () => {
+    localStorage.setItem(STORAGE_KEY, 'expired-token')
+
+    let refreshCalls = 0
+    let statsCalls = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url.endsWith('/api/auth/me')) {
+        return mockJsonResponse({
+          user: {
+            id: 8, username: 'stampede', email: 's@e.com', role: 'viewer',
+            is_active: true, created_at: '2026-01-01T00:00:00Z', last_login: null,
+          },
+          must_change_password: false,
+        })
+      }
+      if (url.endsWith('/api/auth/refresh')) {
+        refreshCalls += 1
+        return mockJsonResponse({ access_token: 'rotated-token' })
+      }
+      if (url.endsWith('/api/stats')) {
+        statsCalls += 1
+        // First 4 parallel attempts all 401; every retry succeeds.
+        if (statsCalls <= 4) {
+          return mockJsonResponse({ detail: 'expired' }, { status: 401, ok: false })
+        }
+        return mockJsonResponse({ ok: true })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    await waitFor(() => {
+      expect(result.current.state.status).toBe('authenticated')
+    })
+
+    const results = await act(async () => {
+      const jobs = Array.from({ length: 4 }, () =>
+        result.current.withAuthRetry(async () => {
+          const res = await fetch('/api/stats')
+          if (!res.ok) {
+            throw new ApiError(res.status, 'expired')
+          }
+          return res
+        }),
+      )
+      return Promise.all(jobs)
+    })
+
+    // The in-flight refresh guard coalesces all 4 waiters onto ONE refresh POST.
+    expect(refreshCalls).toBe(1)
+    expect(statsCalls).toBe(8) // 4 initial 401s + 4 retries
+    expect(results.every((r) => (r as Response).ok)).toBe(true)
+    expect(getAccessToken()).toBe('rotated-token')
+  })
+
+  it('withAuthRetry_with_real_getStats_retries_with_rotated_token', async () => {
+    localStorage.setItem(STORAGE_KEY, 'expired-token')
+
+    let statsCalls = 0
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url.endsWith('/api/auth/me')) {
+        return mockJsonResponse({
+          user: {
+            id: 9, username: 'real', email: 'r@e.com', role: 'viewer',
+            is_active: true, created_at: '2026-01-01T00:00:00Z', last_login: null,
+          },
+          must_change_password: false,
+        })
+      }
+      if (url.endsWith('/api/auth/refresh')) {
+        return mockJsonResponse({ access_token: 'rotated-token' })
+      }
+      if (url.endsWith('/api/stats')) {
+        statsCalls += 1
+        if (statsCalls === 1) {
+          return mockJsonResponse({ detail: 'expired' }, { status: 401, ok: false })
+        }
+        return mockJsonResponse({
+          state: 'idle',
+          counts: { images: 0, indexed: 0, scanned: 0 },
+          last_report: null,
+        })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+    await waitFor(() => {
+      expect(result.current.state.status).toBe('authenticated')
+    })
+
+    // REAL getStats (this file does not mock the api module) → fetchWithAuth
+    // → global fetch. On the 401, withAuthRetry refreshes via AuthContext and
+    // re-runs getStats, which must re-send Authorization: Bearer <rotated>.
+    const { getStats } = await import('../../../api')
+    await act(async () => {
+      await result.current.withAuthRetry(() => getStats())
+    })
+
+    expect(statsCalls).toBe(2)
+    expect(getAccessToken()).toBe('rotated-token')
+
+    const statsCallEntries = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).endsWith('/api/stats'),
+    )
+    expect(statsCallEntries).toHaveLength(2)
+    const retryInit = statsCallEntries[1][1] as RequestInit | undefined
+    const retryHeaders = new Headers(retryInit?.headers)
+    expect(retryHeaders.get('Authorization')).toBe('Bearer rotated-token')
+  })
+
   it('boot_with_transient_refresh_failure_stays_loading', async () => {
     // A 5xx from /api/auth/refresh is transient — boot must NOT log the user
     // out (F4). It stays `loading` so loadingTooLong surfaces the Retry button.

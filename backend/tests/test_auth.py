@@ -63,6 +63,41 @@ def client(app):
 
 
 @pytest.fixture()
+def client_localhost_port(app):
+    """TestClient whose request URL carries an explicit ``http://localhost:8000``
+    authority (default TestClient is ``http://testserver`` with no port). Lets
+    the F3 port-mismatch case hit the explicit-port comparison instead of the
+    hostname-mismatch path."""
+    with TestClient(app[0], base_url="http://localhost:8000") as c:
+        yield c
+
+
+@pytest.fixture()
+def client_cors(tmp_path, monkeypatch):
+    """App for the split-origin SPA deployment: ``METATRACE_CORS_ORIGINS``
+    allows ``http://localhost:5173`` while the API request URL is a different
+    host (``testserver``). Exercises the NEW-1 CORS-aware origin guard."""
+    monkeypatch.setattr(embeddings, "embed_images", _embed_fake)
+    monkeypatch.setattr(metadata, "extract_xmp", lambda paths: {})
+    store = tmp_path / "store"
+    store.mkdir()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(store / "x.png")
+    settings = Settings(
+        store_path=store,
+        data_path=tmp_path / "data",
+        run_initial_scan_on_start=False,
+        batch_size=8,
+        jwt_secret="test-jwt-secret-32-chars-minimum-length!!",
+        admin_token=None,
+        allow_unauthenticated=True,
+        cors_origins="http://localhost:5173",
+    )
+    Indexer(settings).incremental(trigger="seed")
+    with TestClient(create_app(settings)) as c:
+        yield c
+
+
+@pytest.fixture()
 def settings(app):
     return app[1]
 
@@ -407,6 +442,237 @@ class TestRefresh:
         db.revoke_refresh_token(settings.db_path, rt1_hash)
         r = client.post("/api/auth/refresh", cookies={"refresh_token": rt1})
         assert r.status_code == 401
+
+    # ------------------------------------------------------------------
+    # F1 — atomic refresh-token rotation (concurrent replay = reuse)
+    # ------------------------------------------------------------------
+
+    def test_revoke_refresh_token_returns_rowcount(self, client, settings):
+        """F1: db.revoke_refresh_token returns the number of rows updated so
+        the rotation path can detect a concurrent revoke (0 = already gone)."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        rt_hash = _hash_token(rt)
+        assert db.revoke_refresh_token(settings.db_path, rt_hash) == 1
+        assert db.revoke_refresh_token(settings.db_path, rt_hash) == 0
+
+    def test_rotate_refresh_token_concurrent_rotation_is_reuse(self, client, settings, monkeypatch):
+        """F1: if the revoke UPDATE matched 0 rows (another request rotated
+        this exact token between our SELECT and UPDATE), rotate_refresh_token
+        must kill the whole family and raise — no second live token minted."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        # Simulate the interleaving: the concurrent request already revoked the
+        # token, so our guarded UPDATE matches 0 rows.
+        monkeypatch.setattr(db, "revoke_refresh_token", lambda path, token_hash: 0)
+        with pytest.raises(ValueError, match="refresh token has been revoked"):
+            rotate_refresh_token(settings.db_path, rt)
+        # Family revocation must have marked the token revoked in the DB.
+        row = db.get_refresh_token_by_hash(settings.db_path, _hash_token(rt))
+        assert row is not None and row["revoked_at"] is not None
+
+    # ------------------------------------------------------------------
+    # F2 — generic 401 detail on /api/auth/refresh (no token-state leak)
+    # ------------------------------------------------------------------
+
+    def test_refresh_all_401_paths_share_generic_detail(self, client, settings):
+        """F2: missing cookie, revoked token (reuse) and disabled user all
+        produce the same generic 401 detail."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+
+        # (1) missing cookie
+        r_no_cookie = client.post("/api/auth/refresh")
+        assert r_no_cookie.status_code == 401
+        d_no_cookie = r_no_cookie.json()["detail"]
+
+        # (2) revoked token -> reuse detection path
+        db.revoke_refresh_token(settings.db_path, _hash_token(rt))
+        r_revoked = client.post("/api/auth/refresh", cookies={"refresh_token": rt})
+        assert r_revoked.status_code == 401
+        d_revoked = r_revoked.json()["detail"]
+
+        # (3) refresh succeeds rotation-wise but the user is disabled
+        _register_trusted_lan(client, username="disabled", email="dis@test.com")
+        _, rt2 = _get_tokens(client, "disabled")
+        uid = db.get_user_by_username(settings.db_path, "disabled")["id"]
+        db.update_user(settings.db_path, uid, is_active=0)
+        r_disabled = client.post("/api/auth/refresh", cookies={"refresh_token": rt2})
+        assert r_disabled.status_code == 401
+        d_disabled = r_disabled.json()["detail"]
+
+        # One single generic detail for every path — no token state leaked.
+        assert d_no_cookie == d_revoked == d_disabled == "invalid or expired session"
+        assert "revoked" not in d_no_cookie.lower()
+        assert "user" not in d_no_cookie.lower()
+
+    # ------------------------------------------------------------------
+    # F3 — same-origin guard on the refresh endpoint
+    # ------------------------------------------------------------------
+
+    def test_refresh_cross_origin_denied_and_session_survives(self, client):
+        """F3: a foreign Origin header gets 403 and must NOT destroy the
+        session — the cookie still rotates on the next same-origin call."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        r = client.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "https://evil.example"},
+        )
+        assert r.status_code == 403
+        # False positive must not have revoked/rotated the token.
+        r2 = client.post("/api/auth/refresh", cookies={"refresh_token": rt})
+        assert r2.status_code == 200
+        assert r2.json()["access_token"]
+        rt2 = _get_refresh_cookie(client)
+        assert rt2 is not None and rt2 != rt
+
+    def test_refresh_same_origin_allowed(self, client):
+        """F3: an Origin matching the request host passes unchanged
+        (TestClient host is ``testserver``)."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        r = client.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "http://testserver"},
+        )
+        assert r.status_code == 200
+
+    def test_refresh_null_origin_rejected(self, client):
+        """F3: ``Origin: null`` (sandboxed iframes, redirects, data: docs)
+        is never same-origin and must be rejected — the session survives."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        r = client.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "null"},
+        )
+        assert r.status_code == 403
+        r2 = client.post("/api/auth/refresh", cookies={"refresh_token": rt})
+        assert r2.status_code == 200
+
+    def test_refresh_explicit_port_mismatch_rejected(self, client_localhost_port):
+        """F3: same hostname but explicit, differing ports is cross-origin —
+        ``http://localhost:5173`` (SPA dev server) must not match a request
+        to ``http://localhost:8000`` (API) when both ports are explicit."""
+        c = client_localhost_port
+        _register_trusted_lan(c)
+        _, rt = _get_tokens(c)
+        r = c.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "http://localhost:5173"},
+        )
+        assert r.status_code == 403
+        # Same hostname AND the same explicit port is fine.
+        r2 = c.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "http://localhost:8000"},
+        )
+        assert r2.status_code == 200
+
+    def test_refresh_foreign_origin_spam_does_not_consume_rate_bucket(self, client):
+        """F3: the origin guard runs BEFORE the rate-limit check — repeated
+        cross-origin 403s must not count against the 5/minute refresh bucket."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        for _ in range(5):
+            r = client.post(
+                "/api/auth/refresh",
+                cookies={"refresh_token": rt},
+                headers={"Origin": "https://evil.example"},
+            )
+            assert r.status_code == 403
+        # Bucket untouched: the first legitimately-counted, same-origin/none
+        # refresh still succeeds.
+        r = client.post("/api/auth/refresh", cookies={"refresh_token": rt})
+        assert r.status_code == 200
+        assert r.json()["access_token"]
+
+    def test_refresh_allows_cors_whitelisted_origin(self, client_cors):
+        """NEW-1: split-origin SPA — an Origin listed in METATRACE_CORS_ORIGINS
+        passes the guard even though it differs from the API host (regression:
+        before this fix every browser refresh 403'd and silently logged the
+        user out). Scheme stays significant: https://localhost:5173 is NOT the
+        whitelisted http://localhost:5173."""
+        _register_trusted_lan(client_cors)
+        _, rt = _get_tokens(client_cors)
+        r = client_cors.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "http://localhost:5173"},
+        )
+        assert r.status_code == 200
+        assert r.json()["access_token"]
+        r2 = client_cors.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "https://localhost:5173"},
+        )
+        assert r2.status_code == 403
+
+    def test_refresh_error_responses_are_no_store(self, client):
+        """NEW-3: refresh failures must carry ``Cache-Control: no-store`` so a
+        shared cache can't replay a stale 403/401 auth decision."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        r403 = client.post(
+            "/api/auth/refresh",
+            cookies={"refresh_token": rt},
+            headers={"Origin": "https://evil.example"},
+        )
+        assert r403.status_code == 403
+        assert r403.headers.get("cache-control") == "no-store, max-age=0"
+        r401 = client.post("/api/auth/refresh")
+        assert r401.status_code == 401
+        assert r401.headers.get("cache-control") == "no-store, max-age=0"
+
+    # ------------------------------------------------------------------
+    # Expired access token -> silent refresh -> retry contract
+    # ------------------------------------------------------------------
+
+    def test_expired_access_token_refresh_retry_contract(self, client, settings):
+        """The exact client-side flow: an expired access token 401s /api/stats,
+        POST /api/auth/refresh mints a new access token, and the retry with
+        that token succeeds."""
+        _register_trusted_lan(client)
+        _, rt = _get_tokens(client)
+        expired = create_access_token(1, "viewer", secret=settings.jwt_secret, ttl_minutes=-1)
+
+        # Expired JWT -> 401 before the endpoint body runs.
+        r1 = client.get("/api/stats", headers=_auth_headers(expired))
+        assert r1.status_code == 401
+        assert r1.json()["detail"] == "invalid or expired token"
+
+        # Silent refresh with the httpOnly cookie.
+        r2 = client.post("/api/auth/refresh", cookies={"refresh_token": rt})
+        assert r2.status_code == 200
+        new_at = r2.json()["access_token"]
+        assert new_at and new_at != expired
+
+        # Retry the original request with the fresh token.
+        r3 = client.get("/api/stats", headers=_auth_headers(new_at))
+        assert r3.status_code == 200
+
+    # ------------------------------------------------------------------
+    # per_endpoint rate-limit isolation: /api/stats vs /api/auth/refresh
+    # ------------------------------------------------------------------
+
+    def test_refresh_rate_limit_isolated_from_stats(self, client):
+        """Exhausting the /api/stats bucket (30/min per IP:path) must NOT 429
+        /api/auth/refresh — the per_endpoint=True scoping keeps them apart."""
+        _register_trusted_lan(client)
+        at, rt = _get_tokens(client)
+        headers = _auth_headers(at)
+        statuses = [client.get("/api/stats", headers=headers).status_code for _ in range(31)]
+        assert statuses[-1] == 429, f"expected /api/stats to be rate-limited: {statuses[-5:]}"
+        # Refresh keeps its own 5/minute bucket — one call must still succeed.
+        r = client.post("/api/auth/refresh", cookies={"refresh_token": rt})
+        assert r.status_code == 200
 
 
 # ===========================================================================

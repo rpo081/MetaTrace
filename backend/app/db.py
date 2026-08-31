@@ -760,10 +760,16 @@ def get_refresh_token_by_hash(db_path: Path, token_hash: str) -> sqlite3.Row | N
         ).fetchone()
 
 
-def revoke_refresh_token(db_path: Path, token_hash: str) -> None:
-    """Mark a single refresh token as revoked."""
+def revoke_refresh_token(db_path: Path, token_hash: str) -> int:
+    """Mark a single refresh token as revoked.
+
+    Returns the number of rows actually updated (0 or 1). The UPDATE is
+    guarded by ``revoked_at IS NULL`` and SQLite serializes writers, so a 0
+    here means the token was already revoked/rotated concurrently — callers
+    (e.g. atomic refresh-token rotation) treat that as token reuse.
+    """
     with closing(connect(db_path)) as conn, conn:
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE refresh_tokens
             SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -771,6 +777,7 @@ def revoke_refresh_token(db_path: Path, token_hash: str) -> None:
             """,
             (token_hash,),
         )
+        return int(cur.rowcount)
 
 
 def revoke_all_user_tokens(db_path: Path, user_id: int) -> None:

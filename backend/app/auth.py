@@ -194,8 +194,18 @@ def rotate_refresh_token(
     if row["expires_at"] < _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"):
         raise ValueError("refresh token expired")
 
-    # Revoke the old token (rotation)
-    db.revoke_refresh_token(db_path, old_hash)
+    # Revoke the old token (rotation). The UPDATE is guarded by
+    # ``revoked_at IS NULL`` and SQLite serializes writers, so a 0 rowcount
+    # means another request already revoked/rotated *this exact token*
+    # between our SELECT and this UPDATE — that is token reuse, even though
+    # the row looked live a moment ago. Kill the whole family so a stolen
+    # token cannot be silently replayed to mint a second live token.
+    revoked = db.revoke_refresh_token(db_path, old_hash)
+    if revoked == 0:
+        log.warning("refresh token reuse detected (family=%s, user=%s)",
+                     row["family_id"], row["user_id"])
+        db.revoke_token_family(db_path, row["family_id"])
+        raise ValueError("refresh token has been revoked")
 
     # Issue a new token in the same family
     raw = secrets.token_urlsafe(48)

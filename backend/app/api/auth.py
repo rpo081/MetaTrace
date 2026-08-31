@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import ParseResult, urlparse
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -44,6 +45,107 @@ def _refresh_cookie_name() -> str:
 
 
 REFRESH_COOKIE_PATH = "/api/auth/refresh"
+
+# F2: every 401 on the refresh endpoint uses this single generic detail.
+# Distinct messages ("no refresh token", "revoked", "expired", "user disabled")
+# would let an attacker distinguish token states and confirm a stolen token is
+# still valid. The specific reason is still logged server-side.
+_REFRESH_UNAUTHORIZED = "invalid or expired session"
+
+# NEW-3: the refresh endpoint's error responses must be as uncacheable as its
+# 200 response — a shared cache replaying a stale 401/403 could turn a
+# legitimate refresh into a forced logout (and vice versa).
+_REFRESH_NO_STORE = "no-store, max-age=0"
+
+
+def _normalize_http_origin(parsed: ParseResult) -> tuple[str, str, int | None] | None:
+    """Reduce a parsed http(s) URL to a comparable ``(scheme, hostname, port)`` key.
+
+    The port is collapsed onto the scheme default so ``http://h:80`` equals
+    ``http://h`` (an absent port means "scheme default"). A trailing slash is
+    tolerated; anything that is not a bare http(s) origin — non-http scheme,
+    missing hostname, or a real path — returns ``None`` and can never match.
+    """
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    if parsed.path and parsed.path.strip("/"):
+        return None
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = parsed.port
+    if port == default_port:
+        port = None
+    return parsed.scheme, parsed.hostname.lower(), port
+
+
+def _refresh_error(status_code: int, detail: str) -> HTTPException:
+    """HTTPException for the refresh endpoint's error paths.
+
+    Carries ``Cache-Control: no-store`` via the exception's ``headers``
+    argument so the header survives even when the endpoint raises before
+    the ``response: Response`` object is serialized.
+    """
+    return HTTPException(status_code, detail, headers={"Cache-Control": _REFRESH_NO_STORE})
+
+
+def _is_same_origin(request: Request) -> bool:
+    """F3 — reject refresh requests whose Origin (when present) is foreign.
+
+    The refresh cookie is httpOnly, SameSite=Lax and path-scoped to
+    ``/api/auth/refresh``, which is CSRF-safe in modern browsers except for
+    Chrome's 2-minute "Lax+POST" grace window, where a top-level cross-site
+    form POST can carry the cookie. Browsers set ``Origin`` to the page's
+    origin and the page cannot spoof it, so rejecting any present-but-foreign
+    Origin closes that window.
+
+    Two origins count as acceptable:
+
+    * Same-origin — scheme is intentionally ignored: behind TLS-terminating
+      proxies (Caddy/nginx/vite) the browser sends ``Origin: https://host``
+      while the backend sees a plain ``http`` connection — but the public
+      ``Host`` header is preserved, so hostname (and explicit port) still
+      line up. An absent port means "scheme default" on that side; the two
+      default combinations (``None``/``80``/``443`` on both sides) compare
+      equal so TLS-terminated prod (both implicit) matches while a genuine
+      port mismatch (e.g. 5173 vs 8000) still fails.
+    * A split-origin SPA explicitly listed via ``METATRACE_CORS_ORIGINS``
+      (``settings.cors_origin_list``). The SPA legitimately runs on a
+      different origin than the API, so its Origin differs from
+      ``request.url`` — rejecting it would 403 every refresh and silently
+      log the user out. The allow-list empty (default same-origin
+      deployment) keeps the behavior identical to the pure same-origin
+      check.
+
+    An absent Origin (curl, TestClient, same-origin navigation) is allowed
+    through.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    parsed = urlparse(origin)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    # NEW-1 — split-origin SPA: an Origin explicitly trusted via the CORS
+    # allow-list passes even though it differs from the API host.
+    origin_key = _normalize_http_origin(parsed)
+    if origin_key is not None:
+        settings = _settings(request)
+        for allowed in settings.cors_origin_list:
+            try:
+                allowed_key = _normalize_http_origin(urlparse(allowed))
+            except ValueError:
+                continue
+            if allowed_key == origin_key:
+                return True
+    if parsed.hostname.lower() != request.url.hostname.lower():
+        return False
+    origin_port = parsed.port
+    request_port = request.url.port
+    if origin_port == request_port:
+        return True
+    # An absent port means "scheme default" on that side; treat the two
+    # default combinations as equal so TLS-terminated prod (both implicit)
+    # matches while a genuine port mismatch (e.g. 5173 vs 8000) still fails.
+    return origin_port in (None, 80, 443) and request_port in (None, 80, 443)
 
 
 def _set_refresh_cookie(response: Response, token: str, settings: Settings) -> None:
@@ -254,9 +356,15 @@ async def refresh(
     response: Response,
     refresh_token: str | None = Cookie(default=None, alias="refresh_token"),
 ):
+    # F3: same-origin guard first (Chrome Lax+POST grace window). The
+    # rate-limit check stays right after — both remain BEFORE the cookie read.
+    # The 403/401 error responses carry the no-store header (NEW-3); the 429
+    # path from the rate limiter is intentionally left unchanged.
+    if not _is_same_origin(request):
+        raise _refresh_error(403, "cross-origin refresh denied")
     _check_rate_limit(request, "5/minute", per_endpoint=True)
     if not refresh_token:
-        raise HTTPException(401, "no refresh token")
+        raise _refresh_error(401, _REFRESH_UNAUTHORIZED)
 
     settings = _settings(request)
     db_path = settings.db_path
@@ -268,8 +376,8 @@ async def refresh(
             ua=request.headers.get("user-agent"),
             ttl_days=settings.refresh_token_ttl_days,
         )
-    except ValueError as exc:
-        raise HTTPException(401, str(exc)) from None
+    except ValueError:
+        raise _refresh_error(401, _REFRESH_UNAUTHORIZED) from None
 
     # We need the user to issue a new access token
     token_hash = _meta["token_hash"]
@@ -279,7 +387,7 @@ async def refresh(
 
     user_row = db.get_user_by_id(db_path, new_row["user_id"])
     if user_row is None or not user_row["is_active"]:
-        raise HTTPException(401, "user not found or disabled")
+        raise _refresh_error(401, _REFRESH_UNAUTHORIZED)
 
     access_token = create_access_token(
         user_row["id"], user_row["role"],
