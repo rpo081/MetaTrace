@@ -81,7 +81,7 @@ def app_admin(tmp_path, monkeypatch):
         run_initial_scan_on_start=False,
         batch_size=8,
         jwt_secret="test-jwt-secret-32-chars-minimum-length!!",
-        admin_token="admintoken123456",
+        admin_token="admintoken1234567890123456789012",
     )
     Indexer(settings).incremental(trigger="seed")
     _app = create_app(settings)
@@ -218,7 +218,7 @@ class TestRegister:
     def test_register_with_admin_token_header(self, app_admin):
         """Register using X-Admin-Token header."""
         c, _ = app_admin
-        r = _register_admin_token(c, "admintoken123456")
+        r = _register_admin_token(c, "admintoken1234567890123456789012")
         assert r.status_code == 201
 
     def test_register_duplicate_username(self, client):
@@ -307,14 +307,14 @@ class TestLogin:
     def test_login_disabled_account(self, app_admin):
         """After disabling an account, login returns 403."""
         c, settings = app_admin
-        _register_admin_token(c, "admintoken123456", username="disablme", email="d@test.com")
+        _register_admin_token(c, "admintoken1234567890123456789012", username="disablme", email="d@test.com")
         at, _ = _get_tokens(c, "disablme")
         # Get our user id
         me = c.get("/api/auth/me", headers=_auth_headers(at))
         uid = me.json()["user"]["id"]
         # Disable via admin API (X-Admin-Token)
         r_disable = c.patch(f"/api/users/{uid}", json={"is_active": False},
-                            headers={"X-Admin-Token": "admintoken123456"})
+                            headers={"X-Admin-Token": "admintoken1234567890123456789012"})
         assert r_disable.status_code == 200
         # Login should fail with 403
         r = _login(c, username="disablme")
@@ -324,7 +324,7 @@ class TestLogin:
     def test_login_lockout_after_failures(self, app_admin):
         """After max_failed_attempts, account is locked."""
         c, settings = app_admin
-        _register_admin_token(c, "admintoken123456",
+        _register_admin_token(c, "admintoken1234567890123456789012",
                               username="lockme", email="lock@test.com",
                               password="Good-Password-123")
         for i in range(5):
@@ -485,7 +485,7 @@ class TestRBAC:
     def roles_client(self, app_admin):
         """Create admin, editor, viewer with real JWTs."""
         c, _ = app_admin
-        tok = "admintoken123456"
+        tok = "admintoken1234567890123456789012"
         _register_admin_token(c, tok, username="adm_u", email="adm@test.com", role="admin")
         _register_admin_token(c, tok, username="edt_u", email="edt@test.com", role="editor")
         _register_admin_token(c, tok, username="vew_u", email="vew@test.com", role="viewer")
@@ -554,7 +554,7 @@ class TestUserManagement:
         we clear it directly via the DB helper to keep their setup terse.
         """
         c, settings = app_admin
-        at, _ = _get_tokens(c, "admin", "admintoken123456")
+        at, _ = _get_tokens(c, "admin", "admintoken1234567890123456789012")
         # Clear must_change_password directly so these legacy tests don't
         # trip the server-side gate. The dedicated TestMustChangePassword
         # class exercises the gate end-to-end. Scope to the seeded admin
@@ -592,7 +592,7 @@ class TestUserManagement:
     def test_deactivate_user_revokes_tokens(self, admin_client):
         c, at, settings = admin_client
         # Create a user to deactivate
-        _register_admin_token(c, "admintoken123456",
+        _register_admin_token(c, "admintoken1234567890123456789012",
                               username="deact", email="deact@test.com", role="viewer")
         _, rt_viewer = _get_tokens(c, "deact")
         # Get viewer's id
@@ -630,7 +630,7 @@ class TestUserManagement:
 class TestAccountLockout:
     def test_lockout_after_max_failures(self, app_admin):
         c, settings = app_admin
-        _register_admin_token(c, "admintoken123456",
+        _register_admin_token(c, "admintoken1234567890123456789012",
                               username="lockme", email="lock@test.com",
                               password="Good-Password-123")
         for i in range(5):
@@ -641,7 +641,7 @@ class TestAccountLockout:
 
     def test_successful_login_resets_failures(self, app_admin):
         c, settings = app_admin
-        _register_admin_token(c, "admintoken123456",
+        _register_admin_token(c, "admintoken1234567890123456789012",
                               username="resetme", email="reset@test.com",
                               password="Good-Password-123")
         for i in range(3):

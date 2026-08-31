@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../../../api'
 import { AuthProvider, useAuth } from '../AuthContext'
+import { getAccessToken, setAccessToken } from '../../../lib/authStorage'
 
-// Stub localStorage between tests so access-token state doesn't leak.
+// Stub storage between tests so access-token state doesn't leak (memory + localStorage).
 const STORAGE_KEY = 'metatrace_access_token'
 
 function mockJsonResponse(body: unknown, init: { status?: number; ok?: boolean } = {}) {
@@ -19,6 +20,7 @@ let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   localStorage.clear()
+  setAccessToken(null)
   fetchMock = vi.fn()
   globalThis.fetch = fetchMock as unknown as typeof fetch
 })
@@ -26,11 +28,19 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   localStorage.clear()
+  setAccessToken(null)
 })
 
 describe('AuthContext', () => {
   it('boot_with_no_token_sets_unauthenticated', async () => {
-    fetchMock.mockResolvedValue(mockJsonResponse({ detail: 'should not be called' }))
+    // Memory-only token: boot tries silent refresh via httpOnly cookie, then falls back to unauthenticated.
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url.endsWith('/api/auth/refresh')) {
+        return mockJsonResponse({ detail: 'no refresh cookie' }, { status: 401, ok: false })
+      }
+      return mockJsonResponse({ detail: 'should not be called' }, { status: 401, ok: false })
+    })
 
     const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
 
@@ -38,8 +48,8 @@ describe('AuthContext', () => {
       expect(result.current.state.status).toBe('unauthenticated')
     })
 
-    // Boot path skips /me entirely when no token is present.
-    expect(fetchMock).not.toHaveBeenCalled()
+    // Boot tried silent refresh, not /me.
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything())
     expect(result.current.state.user).toBeNull()
     expect(result.current.state.mustChangePassword).toBe(false)
   })
@@ -104,7 +114,8 @@ describe('AuthContext', () => {
       await result.current.login('bob', 'Good-Password-123')
     })
 
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('fresh-token')
+    expect(getAccessToken()).toBe('fresh-token')
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull() // memory-only, not persisted
     expect(result.current.state.status).toBe('authenticated')
     expect(result.current.state.user?.username).toBe('bob')
     expect(result.current.state.mustChangePassword).toBe(true)
@@ -154,7 +165,7 @@ describe('AuthContext', () => {
     })
 
     expect(statsCalls).toBeGreaterThanOrEqual(2)
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('rotated-token')
+    expect(getAccessToken()).toBe('rotated-token')
   })
 
   it('logout_clears_state_and_token', async () => {
@@ -178,6 +189,7 @@ describe('AuthContext', () => {
       await result.current.logout()
     })
 
+    expect(getAccessToken()).toBeNull()
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
     expect(result.current.state.status).toBe('unauthenticated')
     expect(result.current.state.user).toBeNull()

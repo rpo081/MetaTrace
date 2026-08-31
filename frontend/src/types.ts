@@ -109,32 +109,24 @@ export interface RescanDeltaResponse {
   message?: string
 }
 
-export interface StoreSnapshotSettings {
-  configured_root_path: string | null
-  root_path: string
-  default_root_path: string
-  uses_default: boolean
-  source: 'env' | 'store_path'
-}
-
-export interface StoreSnapshotRunResult {
-  root_path: string
-  duration_sec: number
-  initialized: boolean
-  summary: RescanDeltaSummary
-  changes: RescanDelta['changes']
-  delta_file: string | null
-}
-
 export interface Stats {
   indexed: number
-  snapshot_image_count?: number | null
+  db_count: number
+  snapshot_image_count: number | null
+  snapshot_age_sec: number | null
+  snapshot_stale: boolean | null
+  snapshot_max_age_hours: number
+  delta_age_sec: number | null
+  index_file_size_mb: number | null
+  db_file_size_mb: number | null
+  thumbs_count: number
+  thumbs_size_mb: number | null
+  thumbs_max_files: number
   state: string
   last_report: ScanReport | null
   inventory_source?: 'snapshot' | 'walk' | null
   last_scan: string | null
   model: string
   exiftool: boolean
-  /** Upload limit in MiB; optional until the backend exposes it in /api/stats. */
-  max_upload_mb?: number
+  max_upload_mb: number
 }

@@ -4,21 +4,19 @@ from __future__ import annotations
 import json
 import logging
 import os
-import secrets
 import tempfile
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from limits import parse as parse_limit
 from PIL import Image, ImageOps, UnidentifiedImageError
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-from slowapi.wrappers import Limit
 from .. import db, embeddings, metadata, store_snapshot
-from ..dependencies import require_role, require_role_with_query
+from ..config import Settings
+from ..dependencies import get_settings, require_role, require_role_with_query
+from ..rate_limit import check_rate_limit as _check_rate_limit
+from ..thumbs import prune_thumb_cache as _prune_thumb_cache
+from ..thumbs import unlink_quiet as _unlink_quiet
 
 log = logging.getLogger(__name__)
 
@@ -27,45 +25,6 @@ router = APIRouter(prefix="/api")
 # Chunk size for streamed upload reads (1 MiB) — bounds memory use and lets us
 # abort oversized uploads before the whole body has been consumed.
 UPLOAD_CHUNK_BYTES = 1024 * 1024
-
-
-def _check_rate_limit(request: Request, limit_str: str, scope_key: str | None = None) -> None:
-    """Enforce a rate limit against the client IP via slowapi's underlying limiter.
-
-    Raises ``RateLimitExceeded`` if the limit is exceeded.
-
-    ``_limiter`` lives on ``app.state`` rather than being imported at module
-    level because slowapi initialises it lazily (it needs a reference to the
-    FastAPI app) — at import time it does not exist yet.
-
-    Args:
-        request: The incoming FastAPI request.
-        limit_str: Rate limit string understood by :func:`limits.parse`
-                   (e.g. ``"30/minute"``).
-        scope_key: Optional override for the rate-limit scope key.  When
-                   *None* the client IP address is used (the default).
-    """
-    limiter = request.app.state.limiter
-    item = parse_limit(limit_str)
-    key = scope_key if scope_key is not None else get_remote_address(request)
-    if not limiter._limiter.hit(item, key):
-        # Wrap the raw RateLimitItem in a slowapi Limit so that
-        # RateLimitExceeded can access .error_message and .limit.
-        limit_wrapper = Limit(
-            limit=item,
-            key_func=get_remote_address,
-            scope=None,
-            per_method=False,
-            methods=None,
-            error_message=None,
-            exempt_when=None,
-            cost=1,
-            override_defaults=False,
-        )
-        # Set view_rate_limit so the registered exception handler can inject
-        # proper 429 response headers via limiter._inject_headers().
-        request.state.view_rate_limit = (item, [key])
-        raise RateLimitExceeded(limit_wrapper)
 
 
 def _snapshot_scan_root_payload(request: Request) -> dict:
@@ -84,41 +43,6 @@ def _snapshot_scan_root_payload(request: Request) -> dict:
 # Admin auth is now handled via FastAPI dependency injection:
 #   dependencies=[Depends(require_role("admin"))]
 # The legacy X-Admin-Token header is still supported via get_current_user_or_legacy_token.
-_warned_trusted_lan = False  # kept for test compatibility; no longer used in routes
-
-
-def _unlink_quiet(path: str) -> None:
-    """Best-effort cleanup of a failed temp file."""
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
-
-
-def _prune_thumb_cache(settings) -> None:
-    """LRU-eviction for the thumbnail cache (bounded disk use at 200k scale)."""
-    max_files = getattr(settings, "thumbs_max_files", 0)
-    if not max_files or max_files <= 0:
-        return
-    try:
-        thumbs_dir = settings.thumbs_dir
-        if not thumbs_dir.is_dir():
-            return
-        # Only real thumbnails (*.png), not mkstemp orphans
-        files = list(thumbs_dir.glob("*.png"))
-        if len(files) <= max_files:
-            return
-        files.sort(key=lambda p: p.stat().st_mtime)
-        to_remove = len(files) - max_files
-        for p in files[:to_remove]:
-            try:
-                p.unlink()
-            except OSError as exc:
-                log.warning("thumb LRU prune failed for %s: %s", p.name, exc)
-        if to_remove > 0:
-            log.info("thumb cache LRU pruned %d file(s) (cap=%d)", to_remove, max_files)
-    except Exception:  # noqa: BLE001
-        log.warning("thumb cache prune failed", exc_info=True)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -235,10 +159,15 @@ def health() -> dict:
 
 
 @router.get("/stats")
-def stats(request: Request, user=Depends(require_role("admin", "editor", "viewer"))) -> dict:
+def stats(
+    request: Request,
+    response: Response,
+    s: Settings = Depends(get_settings),
+    user=Depends(require_role("admin", "editor", "viewer")),
+) -> dict:
     _check_rate_limit(request, "30/minute")
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
     st = request.app.state
-    s = st.settings
     snap_age, snap_stale = _snapshot_age_sec(s)
     thumbs_count, thumbs_mb = _thumbs_stats(s)
     return {
@@ -274,10 +203,12 @@ _VALID_ORDER = frozenset({"asc", "desc"})
 @router.get("/images")
 def browse_images(
     request: Request,
+    response: Response,
     offset: int = Query(default=0, ge=0, le=200000),
     limit: int = Query(default=60, ge=1),
     sort: str = Query(default="indexed_at"),
     order: str = Query(default="desc"),
+    cursor: str | None = Query(default=None, description="Opaque cursor for keyset pagination (indexed_at, id)"),
     size_min: int | None = Query(default=None, ge=0),
     size_max: int | None = Query(default=None, ge=0),
     width_min: int | None = Query(default=None, ge=0),
@@ -292,10 +223,11 @@ def browse_images(
     folder: str | None = Query(default=None),
     q: str | None = Query(default=None),
     has_xmp: bool = Query(default=False),
+    s: Settings = Depends(get_settings),
     user=Depends(require_role("admin", "editor", "viewer")),
 ) -> dict:
     _check_rate_limit(request, "30/minute")
-    s = request.app.state.settings
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
     if sort not in _VALID_SORT_COLUMNS:
         raise HTTPException(400, "invalid sort column")
     if order not in _VALID_ORDER:
@@ -330,30 +262,52 @@ def browse_images(
         sort=sort,
         order=order,
         filters=filters,
+        cursor=cursor,
     )
     items = []
     for row in rows:
         item = db.row_to_result(row)
-        item["size"] = row["size"]
-        item["mtime"] = row["mtime"]
-        item["sha256"] = row["sha256"]
-        item["indexed_at"] = row["indexed_at"]
-        item["thumb_url"] = f"/api/thumb/{row['id']}"
-        item["file_url"] = f"/api/file/{row['id']}"
+        # DTO guard: attribute access
+        item["size"] = getattr(row, "size", row["size"])
+        item["mtime"] = getattr(row, "mtime", row["mtime"])
+        item["sha256"] = getattr(row, "sha256", row["sha256"])
+        item["indexed_at"] = getattr(row, "indexed_at", row["indexed_at"])
+        rid = getattr(row, "id", row["id"])
+        item["thumb_url"] = f"/api/thumb/{rid}"
+        item["file_url"] = f"/api/file/{rid}"
         items.append(item)
+
+    # Build next_cursor for cursor pagination (only meaningful when sort=indexed_at)
+    next_cursor = None
+    if rows and sort == "indexed_at":
+        last = rows[-1]
+        last_at = getattr(last, "indexed_at", last["indexed_at"])
+        last_id = getattr(last, "id", last["id"])
+        next_cursor = db._encode_cursor(last_at, int(last_id))
+
+    # Keep backwards compat: offset pagination still works; when cursor is used,
+    # has_more is based on whether we got a full page.
+    if cursor is not None and sort == "indexed_at":
+        has_more = len(rows) == capped_limit
+    else:
+        has_more = offset + capped_limit < total
 
     return {
         "items": items,
         "total": total,
         "offset": offset,
         "limit": capped_limit,
-        "has_more": offset + capped_limit < total,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "cursor": cursor,
     }
 
 
 @router.get("/settings/store-snapshot")
 def get_store_snapshot_settings(
-    request: Request, user=Depends(require_role("admin", "editor", "viewer"))
+    request: Request,
+    s: Settings = Depends(get_settings),
+    user=Depends(require_role("admin", "editor", "viewer")),
 ) -> dict:
     _check_rate_limit(request, "30/minute")
     return _snapshot_scan_root_payload(request)
@@ -362,9 +316,9 @@ def get_store_snapshot_settings(
 @router.post("/settings/store-snapshot/run")
 def run_store_snapshot(
     request: Request,
+    s: Settings = Depends(get_settings),
     user=Depends(require_role("admin")),
 ) -> dict:
-    s = request.app.state.settings
     effective = s.default_snapshot_scan_root
     try:
         log.info("starting store snapshot scan for %s", effective)
@@ -408,18 +362,20 @@ async def _read_upload(file: UploadFile | None, max_bytes: int) -> bytes | None:
 @router.post("/search")
 async def search(
     request: Request,
+    response: Response,
     file: UploadFile | None = File(default=None),
     q: str | None = Query(default=None),
     combine: str = Query(default="and"),
     k: int | None = Query(default=None, ge=1),
     min_score: float = Query(default=None, ge=-1.0, le=1.0),
+    s: Settings = Depends(get_settings),
     user=Depends(require_role("admin", "editor", "viewer")),
 ) -> dict:
     # Rate limit: 30 searches/minute per client IP
     _check_rate_limit(request, "30/minute")
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
 
     st = request.app.state
-    s = st.settings
     k = k or s.default_top_k
     k = min(k, s.max_top_k)
     if min_score is None:
@@ -450,17 +406,18 @@ def thumb(
     request: Request,
     image_id: int,
     size: int | None = Query(default=None),
+    s: Settings = Depends(get_settings),
     user=Depends(require_role_with_query("admin", "editor", "viewer")),
 ) -> FileResponse:
     _check_rate_limit(request, "60/minute")
     st = request.app.state
-    s = st.settings
     row = _get_row_or_404(request, image_id)
     side = min(max(size or s.thumb_size, 64), 1024)
 
     cache = s.thumbs_dir / f"{image_id}_{side}.png"
     if not cache.exists():
-        src = _store_file(s, row["rel_path"])
+        rel = getattr(row, "rel_path", row["rel_path"])  # DTO attribute guard
+        src = _store_file(s, rel)
         if not src.exists():
             raise HTTPException(404, "source file missing from store")
         try:
@@ -483,7 +440,7 @@ def thumb(
                     img.save(fh, "PNG", optimize=True)
                 os.replace(tmp_name, cache)
                 _prune_thumb_cache(s)
-            except BaseException:
+            except Exception:
                 _unlink_quiet(tmp_name)
                 raise
         except HTTPException:
@@ -492,64 +449,68 @@ def thumb(
             log.exception("thumbnail generation failed for image %s", image_id)
             raise HTTPException(500, "thumbnail generation failed") from None
     return FileResponse(cache, media_type="image/png",
-                        headers={"Cache-Control": "public, max-age=86400"})
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.get("/file/{image_id}")
 def original_file(
-    request: Request, image_id: int, user=Depends(require_role_with_query("admin", "editor", "viewer"))
+    request: Request,
+    image_id: int,
+    s: Settings = Depends(get_settings),
+    user=Depends(require_role_with_query("admin", "editor", "viewer")),
 ) -> FileResponse:
     _check_rate_limit(request, "30/minute")
-    s = request.app.state.settings
     row = _get_row_or_404(request, image_id)
-    src = _store_file(s, row["rel_path"])
+    rel = getattr(row, "rel_path", row["rel_path"])  # DTO guard
+    src = _store_file(s, rel)
     if not src.exists():
         raise HTTPException(404, "source file missing from store")
     # Inline display with sanitized filename; browser sniffing blocked by X-Content-Type-Options
     # RFC 5987: sanitize for header injection (CR/LF, quotes) and provide encoded fallback.
     from urllib.parse import quote as _quote
-    raw_name = Path(row["rel_path"]).name
+    raw_name = Path(rel).name
     safe_name = _sanitize_filename(raw_name) or f"image-{image_id}"
     quoted = _quote(safe_name, safe="")
     return FileResponse(
         src,
         headers={
             "Content-Disposition": f'inline; filename="{safe_name}"; filename*=UTF-8\'\'{quoted}',
+            "Cache-Control": "private, max-age=86400",
         },
     )
 
 
 @router.get("/rescan-delta")
 def get_rescan_delta(
-    request: Request, user=Depends(require_role("admin", "editor", "viewer"))
+    request: Request,
+    s: Settings = Depends(get_settings),
+    user=Depends(require_role("admin", "editor", "viewer")),
 ) -> dict:
-    """Gibt das neueste Delta JSON für optimierte Rescans zurück.
+    """Return the latest delta JSON for optimized rescans.
 
     Returns:
-        - status='ok': Delta verfügbar mit timestamp, summary, und changes
-        - status='no_delta': Kein Delta verfügbar (Vollständiger Rescan nötig)
+        - status='ok': delta available with timestamp, summary, and changes
+        - status='no_delta': no delta available (full rescan required)
     """
     _check_rate_limit(request, "30/minute")
-    s = request.app.state.settings
     delta_file = s.data_path / "rescan_delta_latest.json"
-    
+
     if not delta_file.exists():
         return {
             "status": "no_delta",
-            "message": "Kein Delta verfügbar",
+            "message": "No delta available",
         }
-    
+
     try:
-        with open(delta_file, "r") as f:
-            delta_data = json.load(f)
-        
+        validated = store_snapshot.load_and_validate_delta(delta_file)
+
         return {
             "status": "ok",
-            "timestamp": delta_data["timestamp"],
-            "summary": delta_data["summary"],
-            "changes": delta_data["changes"]
+            "timestamp": validated.timestamp,
+            "summary": validated.summary,
+            "changes": validated.changes.model_dump(),
         }
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         log.exception("failed to read rescan delta")
         raise HTTPException(500, "failed to read rescan delta") from None
 
@@ -559,13 +520,14 @@ def rescan(
     request: Request,
     rebuild: bool = Query(default=False),
     use_delta: bool = Query(default=True),
+    s: Settings = Depends(get_settings),
     user=Depends(require_role("admin", "editor")),
 ) -> dict:
-    """Startet einen Rescan, optional mit Delta-Optimierung.
-    
+    """Start a rescan, optionally delta-optimized.
+
     Parameters:
-        - rebuild: Vollständiger Rebuild des Index (ignoriert use_delta)
-        - use_delta: Wenn True und Delta verfügbar, verarbeite nur Änderungen
+        - rebuild: full rebuild of the index (ignores use_delta)
+        - use_delta: when True and delta available, process only changes
     """
     # Rate limit: 5 rescans/minute per client IP
     _check_rate_limit(request, "5/minute")
@@ -574,22 +536,25 @@ def rescan(
     if rebuild and user["role"] != "admin":
         raise HTTPException(403, "full rebuild requires admin role")
     
-    # Wenn rebuild=True, ignoriere Delta
+    # If rebuild=True, ignore delta
     if rebuild:
         ok = request.app.state.scheduler.trigger_now(rebuild=True)
         if not ok:
             raise HTTPException(409, "a scan is already running")
         return {"started": True, "rebuild": True, "delta_enabled": False}
     
-    # Optional: Delta-Informationen an Scheduler übergeben (mit Staleness-Check)
+    # Optional: pass validated delta info to scheduler (with staleness check)
     delta_info = None
     if use_delta:
-        s = request.app.state.settings
         delta_file = s.data_path / "rescan_delta_latest.json"
         if delta_file.exists():
             try:
-                with open(delta_file, "r") as f:
-                    delta_info = json.load(f)
+                validated = store_snapshot.load_and_validate_delta(delta_file)
+                delta_info = {
+                    "timestamp": validated.timestamp,
+                    "summary": validated.summary,
+                    "changes": validated.changes.model_dump(),
+                }
                 # Staleness guard: ignore delta older than 2x snapshot TTL (file mtime)
                 max_age_hours = getattr(s, "snapshot_max_age_hours", 24) or 24
                 delta_max_age_sec = max_age_hours * 3600 * 2
@@ -626,6 +591,7 @@ def pause_rescan(
     request: Request,
     user=Depends(require_role("admin")),
 ) -> dict:
+    _check_rate_limit(request, "10/minute")
     ok = request.app.state.scheduler.pause()
     if not ok:
         raise HTTPException(409, "no running scan to pause")
@@ -637,6 +603,7 @@ def resume_rescan(
     request: Request,
     user=Depends(require_role("admin")),
 ) -> dict:
+    _check_rate_limit(request, "10/minute")
     ok = request.app.state.scheduler.resume()
     if not ok:
         raise HTTPException(409, "scan is not paused")

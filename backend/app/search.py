@@ -13,13 +13,15 @@ class SearchService:
 
     @staticmethod
     def _result_from_row(row, *, score: float, exact: bool, source: str) -> dict:
+        # Compile guard: row is ImageDTO (attribute access), not sqlite3.Row
+        row_id = getattr(row, "id", row["id"])  # type: ignore[index]
         return {
             **db.row_to_result(row),
             "score": round(float(score), 4),
             "exact": exact,
             "source": source,
-            "thumb_url": f"/api/thumb/{row['id']}?v=png1",
-            "file_url": f"/api/file/{row['id']}",
+            "thumb_url": f"/api/thumb/{row_id}?v=png1",
+            "file_url": f"/api/file/{row_id}",
         }
 
     def _text_results(self, q: str, k: int) -> list[dict]:
@@ -29,30 +31,41 @@ class SearchService:
             for row in rows
         ]
 
+    # Cap for image+text AND fan-out to prevent OOM on 200k-scale indexes.
+    MAX_SEARCH_FETCH = 5000
+
     def _image_results(self, image_bytes: bytes, k: int, min_score: float, q: str | None = None) -> tuple[int, bool, list[dict]]:
         s = self.settings
 
+        # Single snapshot before embedding: hold lock only to capture (index, ntotal)
+        # atomically, then release for the expensive decode/embed. Re-uses the same
+        # snapshot for FAISS search so total/index remain consistent even if a scan
+        # publishes a new index in between.
         with self.indexer.lock:
-            index = self.indexer.index
-            if index is None or int(index.ntotal) == 0:
+            snapshot = self.indexer.index
+            if snapshot is None or int(snapshot.ntotal) == 0:
                 return 0, False, []
+            total = int(snapshot.ntotal)
+            index = snapshot
 
         img = embeddings.decode_image(image_bytes)
         vector = embeddings.embed_images([img], s)[0]
         sha = hashlib.sha256(image_bytes).hexdigest()
 
-        with self.indexer.lock:
-            index = self.indexer.index
-        total = int(index.ntotal) if index is not None else 0
         if total == 0:
             return 0, False, []
 
-        # For image+text AND we must not truncate before applying the text filter.
-        fetch = total if q else min(total, max(k * 3, k + 10))
+        # For image+text AND we must not truncate before applying the text filter,
+        # but cap to avoid fetching 200k vectors (~400MB) into RAM.
+        if q:
+            fetch = min(total, self.MAX_SEARCH_FETCH)
+        else:
+            fetch = min(total, max(k * 3, k + 10))
         scores, ids = index.search(vector.reshape(1, -1).astype("float32"), fetch)
 
         rows = db.fetch_by_ids(s.db_path, [int(i) for i in ids[0] if i >= 0])
-        by_id = {int(r["id"]): r for r in rows}
+        # DTO compile guard: use attribute access
+        by_id = {int(getattr(r, "id", r["id"])): r for r in rows}  # type: ignore[index]
 
         ranked: list[dict] = []
         exact_hit: dict | None = None
@@ -65,7 +78,8 @@ class SearchService:
                 continue
             seen_ids.add(int(sid))
             item = self._result_from_row(row, score=float(score), exact=False, source="image")
-            if row["sha256"] and row["sha256"] == sha and exact_hit is None:
+            sha_val = getattr(row, "sha256", row["sha256"] if isinstance(row, dict) else None)  # type: ignore[index]
+            if sha_val and sha_val == sha and exact_hit is None:
                 item["exact"] = True
                 item["score"] = 1.0
                 exact_hit = item

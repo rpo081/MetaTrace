@@ -24,17 +24,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Rules from the MetaTrace codebase
+# Rules from the MetaTrace codebase — single source of truth: backend/app/file_rules.py
 # ---------------------------------------------------------------------------
-ALLOWED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff"})
-DEFAULT_MAX_SIZE_MB = 20
-MAX_SEQUENCE_IMAGES = 100
+try:
+    from backend.app.file_rules import (
+        ALLOWED_EXTENSIONS as _CENTRAL_ALLOWED,
+        EXCLUDED_DIR_LEVELS as _CENTRAL_EXCLUDED_LEVELS,
+        EXCLUDED_DIR_NAMES as _CENTRAL_EXCLUDED,
+        MAX_FILE_SIZE_MB as _CENTRAL_MAX_MB,
+        MAX_SEQUENCE_IMAGES as _CENTRAL_MAX_SEQ,
+    )
 
-EXCLUDED_DIR_NAMES = frozenset({
-    "max", "3dsmax", "input", "textures", "texturen", "tex",
-    "references", "referenzen",
-})
-EXCLUDED_DIR_LEVELS = 2
+    ALLOWED_EXTENSIONS = _CENTRAL_ALLOWED
+    DEFAULT_MAX_SIZE_MB = _CENTRAL_MAX_MB
+    MAX_SEQUENCE_IMAGES = _CENTRAL_MAX_SEQ
+    EXCLUDED_DIR_NAMES = _CENTRAL_EXCLUDED
+    EXCLUDED_DIR_LEVELS = _CENTRAL_EXCLUDED_LEVELS
+except ImportError:
+    ALLOWED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff"})
+    DEFAULT_MAX_SIZE_MB = 20
+    MAX_SEQUENCE_IMAGES = 100
+    EXCLUDED_DIR_NAMES = frozenset({
+        "max", "3dsmax", "input", "textures", "texturen", "tex",
+        "references", "referenzen",
+    })
+    EXCLUDED_DIR_LEVELS = 2
 
 SYSTEM_DIR_NAMES = frozenset({
     "$RECYCLE.BIN",

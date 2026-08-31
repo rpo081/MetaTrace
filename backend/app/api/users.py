@@ -3,11 +3,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from limits import parse as parse_limit
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-from slowapi.wrappers import Limit
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+
+from ..rate_limit import check_rate_limit as _check_rate_limit
 
 from .. import db
 from ..auth import audit, hash_password, revoke_all_user_tokens
@@ -27,29 +25,6 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 _admin = Depends(require_role("admin"))
 
 
-def _check_rate_limit(request: Request, limit_str: str) -> None:
-    """Mirror the helper in ``routes.py`` so user-management endpoints are
-    rate-limited per client IP. Keeps the dependency local to avoid coupling
-    this router to a private function in another module."""
-    limiter = request.app.state.limiter
-    item = parse_limit(limit_str)
-    key = get_remote_address(request)
-    if not limiter._limiter.hit(item, key):
-        limit_wrapper = Limit(
-            limit=item,
-            key_func=get_remote_address,
-            scope=None,
-            per_method=False,
-            methods=None,
-            error_message=None,
-            exempt_when=None,
-            cost=1,
-            override_defaults=False,
-        )
-        request.state.view_rate_limit = (item, [key])
-        raise RateLimitExceeded(limit_wrapper)
-
-
 def _serialize_user(row) -> UserListItem:
     return UserListItem(
         id=row["id"],
@@ -67,8 +42,9 @@ def _serialize_user(row) -> UserListItem:
 # ---------------------------------------------------------------------------
 
 @router.get("", dependencies=[_admin])
-async def list_users(request: Request):
+async def list_users(request: Request, response: Response):
     _check_rate_limit(request, "30/minute")
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     rows = db.list_users(request.app.state.settings.db_path)
     return {"users": [_serialize_user(r) for r in rows]}
 
@@ -117,8 +93,9 @@ async def create_user(
 # ---------------------------------------------------------------------------
 
 @router.get("/{user_id}", dependencies=[_admin])
-async def get_user(request: Request, user_id: int):
+async def get_user(request: Request, response: Response, user_id: int):
     _check_rate_limit(request, "30/minute")
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     row = db.get_user_by_id(request.app.state.settings.db_path, user_id)
     if row is None:
         raise HTTPException(404, "user not found")
@@ -191,10 +168,10 @@ async def delete_user(request: Request, user_id: int):
     if existing is None:
         raise HTTPException(404, "user not found")
 
-    # Prevent deleting the last admin
-    if existing["role"] == "admin":
+    # Prevent deleting the last active admin (count only active admins)
+    if existing["role"] == "admin" and existing["is_active"]:
         rows = db.list_users(db_path)
-        admin_count = sum(1 for r in rows if r["role"] == "admin")
+        admin_count = sum(1 for r in rows if r["role"] == "admin" and r["is_active"])
         if admin_count <= 1:
             raise HTTPException(400, "cannot delete the last admin user")
 

@@ -1,5 +1,6 @@
-import { authenticatedUrl } from '../api'
 import type { BrowseImage, SearchResult } from '../types'
+import { basename } from '../utils/format'
+import AuthenticatedImage from './AuthenticatedImage'
 
 type ResultItem = SearchResult | BrowseImage
 
@@ -7,10 +8,6 @@ interface Props {
   results: ResultItem[]
   selectedId: number | null
   onSelect: (r: ResultItem) => void
-}
-
-function basename(p: string): string {
-  return p.split(/[\\/]/).pop() ?? p
 }
 
 function sourceLabel(source: SearchResult['source']): string | null {
@@ -43,7 +40,7 @@ export default function ResultGrid({ results, selectedId, onSelect }: Props) {
             onClick={() => onSelect(r)}
           >
             <span className="card-img-wrap">
-              <img src={authenticatedUrl(r.thumb_url)} loading="lazy" alt="" onError={(e) => { e.currentTarget.style.display = 'none' }} />
+              <AuthenticatedImage src={r.thumb_url} loading="lazy" alt="" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }} />
               {exact && <span className="badge badge-exact">EXACT</span>}
               {sourceLabel(source) && <span className="badge badge-source">{sourceLabel(source)}</span>}
               {hasScore && <span className="badge badge-score">{Math.round(score * 100)}%</span>}

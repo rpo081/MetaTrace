@@ -70,33 +70,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const inflightRefresh = useRef<Promise<string | null> | null>(null)
 
   // Boot sequence — runs once per (bootNonce, mount).
+  // Memory-only token: on hard reload memory is empty but httpOnly refresh
+  // cookie may still be valid. Try silent refresh before declaring unauthenticated.
   useEffect(() => {
     let cancelled = false
     const token = getAccessToken()
-    if (!token) {
-      setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
-      return
-    }
-    fetchMe()
-      .then((me: MeResponse) => {
-        if (cancelled) return
-        setState({
-          user: me.user,
-          status: 'authenticated',
-          mustChangePassword: me.must_change_password,
+    const bootWithToken = (tok: string | null) => {
+      if (!tok) {
+        setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
+        return
+      }
+      fetchMe()
+        .then((me: MeResponse) => {
+          if (cancelled) return
+          setState({
+            user: me.user,
+            status: 'authenticated',
+            mustChangePassword: me.must_change_password,
+          })
         })
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        if (err instanceof ApiError && err.status === 401) {
-          setAccessToken(null)
+        .catch((err: unknown) => {
+          if (cancelled) return
+          if (err instanceof ApiError && err.status === 401) {
+            setAccessToken(null)
+            setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
+            return
+          }
+        })
+    }
+
+    if (token) {
+      bootWithToken(token)
+    } else {
+      // No memory token — try silent refresh via httpOnly cookie (7-day window).
+      refreshAccessToken()
+        .then((newToken) => {
+          if (cancelled) return
+          bootWithToken(newToken)
+        })
+        .catch(() => {
+          if (cancelled) return
           setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
-          return
-        }
-        // Network / server error: leave status 'loading' so the gate can
-        // surface a "Cannot reach server" + Retry button. Timeout below
-        // will flip loadingTooLong to true after LOADING_TIMEOUT_MS.
-      })
+        })
+    }
     return () => {
       cancelled = true
     }
@@ -116,6 +132,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const result = await apiLogin(username, password)
     setAccessToken(result.access_token)
+    // Clear legacy admin token that would cause 403 vs 401 cascade
+    try {
+      const { clearLegacyAdminToken } = await import('../../lib/storage')
+      clearLegacyAdminToken()
+    } catch { /* ignore */ }
     // Fetch /me to pick up the must_change_password flag (plan-frontend §3.3).
     const me = await fetchMe()
     setState({
@@ -128,6 +149,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await apiLogout()
     setAccessToken(null)
+    try {
+      const { clearLegacyAdminToken } = await import('../../lib/storage')
+      clearLegacyAdminToken()
+    } catch { /* ignore */ }
     setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
   }, [])
 

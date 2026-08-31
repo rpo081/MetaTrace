@@ -53,11 +53,11 @@ def test_metatrace_env_vars_map_to_settings(monkeypatch):
     from backend.app.config import Settings as S
 
     monkeypatch.setenv("LOCAL_IMAGE_STORE", "Z:/images")
-    monkeypatch.setenv("METATRACE_ADMIN_TOKEN", "abc")
+    monkeypatch.setenv("METATRACE_ADMIN_TOKEN", "admintoken1234567890123456789012")
     monkeypatch.setenv("METATRACE_CORS_ORIGINS", "http://a.example, http://b.example")
     s = S()
     assert s.store_path == Path("Z:/images")
-    assert s.admin_token == "abc"
+    assert s.admin_token == "admintoken1234567890123456789012"
     assert s.cors_origin_list == ["http://a.example", "http://b.example"]
     monkeypatch.delenv("LOCAL_IMAGE_STORE")
     monkeypatch.delenv("METATRACE_ADMIN_TOKEN")
@@ -347,7 +347,7 @@ def test_rescan_admin_token_enforced(tmp_path, monkeypatch):
         store_path=store,
         data_path=tmp_path / "data",
         run_initial_scan_on_start=False,
-        admin_token="s3cret",
+        admin_token="admintoken1234567890123456789012",
     )
     app = create_app(settings)
     with TestClient(app) as c:
@@ -364,7 +364,7 @@ def test_rescan_admin_token_enforced(tmp_path, monkeypatch):
         )
         assert r.status_code == 403
         # correct token -> accepted
-        ok = c.post("/api/rescan", headers={"X-Admin-Token": "s3cret"})
+        ok = c.post("/api/rescan", headers={"X-Admin-Token": "admintoken1234567890123456789012"})
         assert ok.status_code == 202
     app.state.scheduler.stop()
 
@@ -464,7 +464,7 @@ def test_startup_warns_when_admin_token_unset(tmp_path, monkeypatch, caplog):
 
 
 def test_startup_quiet_when_admin_token_set(tmp_path, monkeypatch, caplog):
-    app, _ = _minimal_app(tmp_path, _monkeypatch=monkeypatch, admin_token="t0k3n")
+    app, _ = _minimal_app(tmp_path, _monkeypatch=monkeypatch, admin_token="admintoken1234567890123456789012")
     with caplog.at_level("WARNING"):
         with TestClient(app):
             pass

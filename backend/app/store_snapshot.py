@@ -8,8 +8,70 @@ from collections.abc import Callable, Collection
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
-DEFAULT_EXTENSIONS = frozenset({".psd", ".jpg", ".jpeg", ".png", ".tif", ".tiff"})
+from .file_rules import ALLOWED_EXTENSIONS as _CENTRAL_ALLOWED
+
+DEFAULT_EXTENSIONS = _CENTRAL_ALLOWED
+
+
+def _validate_delta_path(p: str) -> str:
+    if "\x00" in p:
+        raise ValueError("null byte not allowed")
+    if p.startswith("/") or p.startswith("\\"):
+        raise ValueError("absolute path not allowed")
+    if os.path.isabs(p):
+        raise ValueError("absolute path not allowed")
+    if len(p) >= 2 and p[1] == ":" and p[0].isalpha():
+        raise ValueError("absolute path not allowed")
+    norm = p.replace("\\", "/")
+    if ".." in norm.split("/"):
+        raise ValueError("path traversal '..' not allowed")
+    if "//" in norm:
+        raise ValueError("empty path component not allowed")
+    if not p.strip():
+        raise ValueError("empty path not allowed")
+    return p
+
+
+class DeltaChanges(BaseModel):
+    """Validated delta file lists — rejects malformed entries."""
+
+    created: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
+    modified: list[str] = Field(default_factory=list)
+
+    @field_validator("created", "deleted", "modified", mode="after")
+    @classmethod
+    def _check_paths(cls, v: list[str]) -> list[str]:
+        for item in v:
+            _validate_delta_path(item)
+        return v
+
+
+class RescanDeltaPayload(BaseModel):
+    """Top-level rescan_delta_latest.json shape."""
+
+    timestamp: str
+    summary: dict | None = None
+    changes: DeltaChanges
+
+
+def validate_delta_payload(data: dict) -> RescanDeltaPayload:
+    """Validate raw delta JSON, raising ValidationError on malformed."""
+    return RescanDeltaPayload.model_validate(data)
+
+
+def load_and_validate_delta(path: Path) -> RescanDeltaPayload:
+    """Load and validate a delta JSON file."""
+    import json as _json
+
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = _json.load(fh)
+    # Support legacy where changes might be missing
+    if "changes" not in raw:
+        raw["changes"] = {}
+    return validate_delta_payload(raw)
 
 
 def scan_drive(

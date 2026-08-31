@@ -91,6 +91,36 @@ def decode_access_token(token: str, *, secret: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# HMAC signed URLs for file access (C-02: avoid JWT in query Referer)
+# ---------------------------------------------------------------------------
+
+def create_file_signature(secret: str, file_id: int, exp: int) -> str:
+    """HMAC-SHA256 signature for ``file_id:exp`` using JWT secret as key."""
+    import hashlib as _hashlib
+    import hmac as _hmac
+
+    msg = f"{file_id}:{exp}".encode()
+    return _hmac.new(secret.encode(), msg, _hashlib.sha256).hexdigest()
+
+
+def verify_file_signature(secret: str, file_id: int, exp: int, sig: str) -> bool:
+    """Constant-time verify of file signature."""
+    import hmac as _hmac
+
+    expected = create_file_signature(secret, file_id, exp)
+    return _hmac.compare_digest(expected, sig)
+
+
+def build_signed_file_url(secret: str, file_id: int, ttl_sec: int = 300) -> str:
+    """Return /api/file/{id}?sig=&exp= URL valid for ttl_sec."""
+    import time as _time
+
+    exp = int(_time.time()) + ttl_sec
+    sig = create_file_signature(secret, file_id, exp)
+    return f"/api/file/{file_id}?sig={sig}&exp={exp}"
+
+
+# ---------------------------------------------------------------------------
 # Refresh tokens (opaque, hashed before storage)
 # ---------------------------------------------------------------------------
 

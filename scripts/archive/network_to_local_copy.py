@@ -15,16 +15,33 @@ IS_WINDOWS = os.name == "nt"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(BASE_DIR, "snapshots")
 DIFF_DIR = os.path.join(SNAPSHOT_DIR, "diffs")
-EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
-EXCLUDED_SCAN_PATHS = set()
-EXCLUDED_DIR_NAMES = {
-    "max", "3dsmax", "input", "textures", "texturen", "tex",
-    "references", "referenzen",
-}
-MAX_SEQUENCE_IMAGES = 100
-# Dateien über diesem Limit (in MB) werden nicht kopiert; 0 = unbegrenzt.
-MAX_FILE_SIZE_MB = 20
-EXCLUDED_DIR_LEVELS = 2
+# Centralised rules — single source: backend/app/file_rules.py
+try:
+    from backend.app.file_rules import (
+        ALLOWED_EXTENSIONS as _CENTRAL_ALLOWED,
+        EXCLUDED_DIR_LEVELS as _CENTRAL_EXCLUDED_LEVELS,
+        EXCLUDED_DIR_NAMES as _CENTRAL_EXCLUDED,
+        MAX_FILE_SIZE_MB as _CENTRAL_MAX_MB,
+        MAX_SEQUENCE_IMAGES as _CENTRAL_MAX_SEQ,
+    )
+
+    EXTENSIONS = set(_CENTRAL_ALLOWED)
+    EXCLUDED_DIR_NAMES = set(_CENTRAL_EXCLUDED)
+    MAX_SEQUENCE_IMAGES = _CENTRAL_MAX_SEQ
+    MAX_FILE_SIZE_MB = _CENTRAL_MAX_MB
+    EXCLUDED_DIR_LEVELS = _CENTRAL_EXCLUDED_LEVELS
+    EXCLUDED_SCAN_PATHS = set()
+except ImportError:
+    EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
+    EXCLUDED_SCAN_PATHS = set()
+    EXCLUDED_DIR_NAMES = {
+        "max", "3dsmax", "input", "textures", "texturen", "tex",
+        "references", "referenzen",
+    }
+    MAX_SEQUENCE_IMAGES = 100
+    # Dateien über diesem Limit (in MB) werden nicht kopiert; 0 = unbegrenzt.
+    MAX_FILE_SIZE_MB = 20
+    EXCLUDED_DIR_LEVELS = 2
 ROBOCOPY_THREADS = 32
 ROBOCOPY_PROCESSES = 8
 PROGRESS_UPDATE_SEC = 1.0

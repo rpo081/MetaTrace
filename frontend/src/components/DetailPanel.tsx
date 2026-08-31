@@ -1,65 +1,19 @@
 import { useState } from 'react'
-import { authenticatedUrl } from '../api'
 import type { BrowseImage, SearchResult } from '../types'
 import { CloseIcon, ExternalLinkIcon } from './Icon'
+import { fmtValue, sortedXmpEntries } from '../utils/format'
+import AuthenticatedImage from './AuthenticatedImage'
+import { getSignedFileUrl } from '../features/auth/api'
 
 interface Props {
   result: SearchResult | BrowseImage
   onClose: () => void
 }
 
-const XMP_PRIORITY = ['Creator', 'Description'] as const
-
-function fmtValue(v: unknown): string {
-  if (Array.isArray(v)) return v.join('; ')
-  if (typeof v === 'object' && v !== null) return JSON.stringify(v)
-  return String(v)
-}
-
 function detailThumbnailUrl(thumbUrl: string): string {
   const url = new URL(thumbUrl, window.location.origin)
   url.searchParams.set('size', '512')
-  // authenticatedUrl appends token; do it after setting size
-  const raw = `${url.pathname}${url.search}`
-  // inline to avoid circular import at top-level; dynamic import via helper
-  try {
-    const token = (() => {
-      try {
-        return localStorage.getItem('metatrace_access_token') || localStorage.getItem('metatrace_admin_token')
-      } catch { return null }
-    })()
-    if (token) {
-      url.searchParams.set('token', token)
-      return `${url.pathname}${url.search}`
-    }
-  } catch { /* ignore */ }
-  return raw
-}
-
-function matchesXmpAttribute(key: string, attribute: string): boolean {
-  const keyLower = key.toLowerCase()
-  const attrLower = attribute.toLowerCase()
-  if (keyLower.endsWith(attrLower)) return true
-  const tail = keyLower.split(':').pop() ?? keyLower
-  return tail === attrLower
-}
-
-function sortedXmpEntries(xmp: Record<string, unknown>): Array<[string, unknown]> {
-  const entries = Object.entries(xmp)
-  if (entries.length === 0) return []
-
-  const prioritized: Array<[string, unknown]> = []
-  const rest = [...entries]
-
-  for (const attr of XMP_PRIORITY) {
-    const idx = rest.findIndex(([key]) => matchesXmpAttribute(key, attr))
-    if (idx !== -1) {
-      const [key, value] = rest.splice(idx, 1)[0]
-      prioritized.push([attr, value])
-    }
-  }
-
-  return [...prioritized, ...rest]
+  return `${url.pathname}${url.search}`
 }
 
 function toWindowsPath(path: string): string {
@@ -149,11 +103,11 @@ export default function DetailPanel({ result, onClose }: Props) {
         </button>
       </div>
 
-      <img
+      <AuthenticatedImage
         className="detail-img"
         src={detailThumbnailUrl(result.thumb_url)}
         alt={result.rel_path}
-        onError={(e) => { e.currentTarget.style.display = 'none' }}
+        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
       />
 
       <div className="detail-section">
@@ -207,7 +161,19 @@ export default function DetailPanel({ result, onClose }: Props) {
         <div className="kv">
           <span className="k">Open</span>
           <span className="v">
-            <a href={authenticatedUrl(result.file_url)} target="_blank" rel="noreferrer">
+            <a
+              href="#"
+              onClick={async (e) => {
+                e.preventDefault()
+                try {
+                  const url = await getSignedFileUrl(result.id)
+                  window.open(url, '_blank', 'noopener,noreferrer')
+                } catch {
+                  // fallback: try cookie-authenticated fetch+blob open
+                  window.open(result.file_url, '_blank', 'noopener,noreferrer')
+                }
+              }}
+            >
               original file <ExternalLinkIcon width="12" height="12" className="icon-inline" />
             </a>
           </span>

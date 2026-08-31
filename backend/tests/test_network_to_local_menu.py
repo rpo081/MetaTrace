@@ -10,7 +10,9 @@ nc = load_network_copy_module()
 
 def test_settings_defaults_include_size_limit():
     s = menu.Settings()
-    assert s.max_file_size_mb == nc.MAX_FILE_SIZE_MB == 20
+    assert s.max_file_size_mb == nc.MAX_FILE_SIZE_MB
+    # Centralised via file_rules — value is now 100 (was 20 before centralisation)
+    assert nc.MAX_FILE_SIZE_MB == 100
 
 
 def test_settings_load_legacy_preset_without_size_key(tmp_path):
@@ -24,11 +26,11 @@ def test_settings_load_legacy_preset_without_size_key(tmp_path):
     }))
     s = menu.PresetConfig.load(cfg).current_settings()
     assert s.extensions == [".png"]
-    assert s.max_file_size_mb == 20  # default applied for legacy configs
+    assert s.max_file_size_mb == nc.MAX_FILE_SIZE_MB  # default applied for legacy configs
 
 
 def test_normalize_rejects_invalid_size_values():
-    for raw, expected in (("abc", 20), (-5, 0), (0, 0), ("35", 35)):
+    for raw, expected in (("abc", nc.MAX_FILE_SIZE_MB), (-5, 0), (0, 0), ("35", 35)):
         s = menu.Settings(max_file_size_mb=raw)
         s.normalize()
         assert s.max_file_size_mb == expected, raw

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 CREATE INDEX IF NOT EXISTS idx_images_mtime ON images(mtime);
 CREATE INDEX IF NOT EXISTS idx_images_indexed_at ON images(indexed_at);
+CREATE INDEX IF NOT EXISTS idx_images_indexed_at_id ON images(indexed_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_images_size ON images(size);
 CREATE INDEX IF NOT EXISTS idx_images_rel_path ON images(rel_path);
 CREATE INDEX IF NOT EXISTS idx_images_width ON images(width);
@@ -232,25 +233,32 @@ def remove_ids(db_path: Path, ids: Sequence[int]) -> None:
         conn.execute(f"DELETE FROM images WHERE id IN ({placeholders})", tuple(ids))
 
 
-def get_by_id(db_path: Path, image_id: int) -> sqlite3.Row | None:
+def get_by_id(db_path: Path, image_id: int):  # returns ImageDTO | None
+    from .models.scan import row_to_dto
+
     with closing(connect(db_path)) as conn:
-        return conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
+        row = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
+    return row_to_dto(row) if row is not None else None
 
 
-def fetch_by_ids(db_path: Path, ids: Sequence[int]) -> list[sqlite3.Row]:
+def fetch_by_ids(db_path: Path, ids: Sequence[int]):  # -> list[ImageDTO]
     """Fetch rows for ids, preserving the order of the input list."""
-    rows_by_id = {int(r["id"]): r for r in _fetch_all(db_path, ids)}
-    return [rows_by_id[i] for i in ids if i in rows_by_id]
+    rows = _fetch_all(db_path, ids)
+    by_id = {int(r.id): r for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
 
 
-def _fetch_all(db_path: Path, ids: Sequence[int]) -> list[sqlite3.Row]:
+def _fetch_all(db_path: Path, ids: Sequence[int]):  # -> list[ImageDTO]
+    from .models.scan import row_to_dto
+
     if not ids:
         return []
     placeholders = ",".join("?" * len(ids))
     with closing(connect(db_path)) as conn:
-        return conn.execute(
+        rows = conn.execute(
             f"SELECT * FROM images WHERE id IN ({placeholders})", tuple(int(i) for i in ids)
         ).fetchall()
+    return [row_to_dto(r) for r in rows]
 
 
 def count(db_path: Path) -> int:
@@ -273,19 +281,41 @@ def kv_set(db_path: Path, key: str, value: str) -> None:
         )
 
 
-def kv_delete(db_path: Path, key: str) -> None:
-    with closing(connect(db_path)) as conn, conn:
-        conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+def row_to_result(row) -> dict:
+    """Accept ImageDTO or sqlite3.Row and return API-safe dict."""
+    # DTO has attributes, Row has mapping
+    def _get(key):
+        return row[key] if isinstance(row, dict) or hasattr(row, "__getitem__") and key in row else getattr(row, key, None) if hasattr(row, key) else row[key]  # type: ignore
 
-
-def row_to_result(row: sqlite3.Row) -> dict:
+    # Prefer attribute access for DTO
+    try:
+        rel = getattr(row, "rel_path")
+        orig = getattr(row, "original_path")
+        width = getattr(row, "width")
+        height = getattr(row, "height")
+        xmp_val = getattr(row, "xmp")
+        rid = getattr(row, "id")
+    except AttributeError:
+        rel = row["rel_path"]
+        orig = row["original_path"]
+        width = row["width"]
+        height = row["height"]
+        xmp_val = row["xmp"]
+        rid = row["id"]
+    if isinstance(xmp_val, str):
+        try:
+            xmp = json.loads(xmp_val)
+        except Exception:
+            xmp = {}
+    else:
+        xmp = xmp_val if isinstance(xmp_val, dict) else {}
     return {
-        "id": row["id"],
-        "rel_path": row["rel_path"],
-        "original_path": row["original_path"],
-        "width": row["width"],
-        "height": row["height"],
-        "xmp": json.loads(row["xmp"]) if isinstance(row["xmp"], str) else row["xmp"],
+        "id": rid,
+        "rel_path": rel,
+        "original_path": orig,
+        "width": width,
+        "height": height,
+        "xmp": xmp,
     }
 
 
@@ -323,6 +353,28 @@ _VALID_SORT_COLUMNS = frozenset({
 })
 
 
+def _encode_cursor(indexed_at: str, row_id: int) -> str:
+    """Encode a cursor for keyset pagination (indexed_at, id)."""
+    import base64
+
+    raw = f"{indexed_at}|{row_id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple[str, int] | None:
+    """Decode a cursor string to (indexed_at, id). Returns None on failure."""
+    import base64
+
+    try:
+        # Pad base64
+        padded = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode()).decode()
+        indexed_at, id_str = raw.rsplit("|", 1)
+        return indexed_at, int(id_str)
+    except Exception:
+        return None
+
+
 def browse_images(
     db_path: Path,
     *,
@@ -331,8 +383,15 @@ def browse_images(
     sort: str = "indexed_at",
     order: str = "desc",
     filters: dict | None = None,
+    cursor: str | None = None,
 ) -> tuple[int, list[sqlite3.Row]]:
     """Browse indexed images with filtering, sorting and pagination.
+
+    Supports both legacy OFFSET pagination (``offset``) and cursor/keyset
+    pagination (``cursor``). When ``cursor`` is provided and ``sort`` is
+    ``indexed_at``, uses ``WHERE (indexed_at, id) < (?, ?)`` with the
+    composite index ``idx_images_indexed_at_id`` for O(log n) pages instead
+    of O(n) OFFSET scans. Falls back to OFFSET for other sort columns.
 
     Returns ``(total_count, rows)`` where *rows* are the page slice.
     """
@@ -401,37 +460,72 @@ def browse_images(
     if filters.get("has_xmp"):
         where_clauses.append("xmp != '{}'")
 
-    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-
-    # Validate sort
+    # Validate sort early (needed for cursor eligibility)
     if sort not in _VALID_SORT_COLUMNS:
         sort = "indexed_at"
     order_upper = "DESC" if order.lower() == "desc" else "ASC"
 
+    # Snapshot base filter state before cursor clause for total count
+    base_clauses = list(where_clauses)
+    base_params = list(params)
+
+    decoded = _decode_cursor(cursor) if cursor else None
+    use_cursor = decoded is not None and sort == "indexed_at"
+    if use_cursor and decoded:
+        cursor_at, cursor_id = decoded
+        # Tuple comparison uses composite index idx_images_indexed_at_id
+        if order.lower() == "desc":
+            where_clauses.append("(indexed_at, id) < (?, ?)")
+        else:
+            where_clauses.append("(indexed_at, id) > (?, ?)")
+        params.extend([cursor_at, cursor_id])
+
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    base_sql = " AND ".join(base_clauses) if base_clauses else "1=1"
+
     with closing(connect(db_path)) as conn:
         total = int(
-            conn.execute(f"SELECT COUNT(*) AS n FROM images WHERE {where_sql}", tuple(params))
-            .fetchone()["n"]
+            conn.execute(f"SELECT COUNT(*) AS n FROM images WHERE {base_sql}", tuple(base_params)).fetchone()["n"]
         )
-        rows = conn.execute(
-            f"SELECT * FROM images WHERE {where_sql} ORDER BY {sort} {order_upper} LIMIT ? OFFSET ?",
-            (*params, limit, offset),
-        ).fetchall()
+        if use_cursor:
+            raw = conn.execute(
+                f"SELECT * FROM images WHERE {where_sql} ORDER BY {sort} {order_upper} LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        else:
+            raw = conn.execute(
+                f"SELECT * FROM images WHERE {where_sql} ORDER BY {sort} {order_upper} LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
 
-    return total, list(rows)
+    from .models.scan import row_to_dto
+
+    rows = [row_to_dto(r) for r in raw]
+    return total, rows
 
 
 def escape_like(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def matches_text(row: sqlite3.Row | dict, q: str) -> bool:
+def matches_text(row, q: str) -> bool:
     if not q or not q.strip():
         return True
     terms = [t.lower() for t in q.strip().split() if t]
     if not terms:
         return True
-    row_dict = dict(row) if hasattr(row, "keys") else (row if isinstance(row, dict) else {})
+    # Support ImageDTO (attributes) and legacy Row/dict
+    if hasattr(row, "rel_path") and hasattr(row, "original_path"):
+        row_dict = {"rel_path": getattr(row, "rel_path"), "original_path": getattr(row, "original_path"), "xmp": getattr(row, "xmp", "{}")}
+    elif hasattr(row, "keys"):
+        try:
+            row_dict = dict(row)
+        except Exception:
+            row_dict = {k: row[k] for k in row.keys()}  # type: ignore
+    elif isinstance(row, dict):
+        row_dict = row
+    else:
+        row_dict = {}
     rel = str(row_dict.get("rel_path") or "").lower()
     orig = str(row_dict.get("original_path") or "").lower()
     xmp_val = row_dict.get("xmp", "{}")
@@ -448,7 +542,7 @@ def matches_text(row: sqlite3.Row | dict, q: str) -> bool:
     return True
 
 
-def search_by_text(db_path: Path, q: str, limit: int = 100) -> list[sqlite3.Row]:
+def search_by_text(db_path: Path, q: str, limit: int = 100):  # -> list[ImageDTO]
     if not q or not q.strip():
         return []
     terms = [t.strip() for t in q.strip().split() if t.strip()]
@@ -467,8 +561,11 @@ def search_by_text(db_path: Path, q: str, limit: int = 100) -> list[sqlite3.Row]
     sql = f"SELECT * FROM images WHERE {where_sql} ORDER BY id DESC LIMIT ?"
     params.append(limit)
 
+    from .models.scan import row_to_dto
+
     with closing(connect(db_path)) as conn:
-        return conn.execute(sql, tuple(params)).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [row_to_dto(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

@@ -255,9 +255,13 @@ Environment variables (or `.env`, see `.env.example`):
 | `THUMB_SIZE` | `256` | default thumbnail max side for result-grid thumbnails |
 | `MAX_UPLOAD_MB` | `64` | query upload limit (streamed, early-abort) |
 | `ALLOWED_EXTENSIONS` | `.psd,.jpg,.jpeg,.png,.tif,.tiff` | indexed formats |
-| `METATRACE_ADMIN_TOKEN` | — | require `X-Admin-Token` on mutating rescan endpoints; empty = trusted-LAN mode |
+| `METATRACE_ADMIN_TOKEN` | — | legacy seed for `X-Admin-Token` / admin password seed; **if set, must be >=32 chars** (`secrets.token_urlsafe(32)`). Empty alone does **not** grant open access — requires `METATRACE_ALLOW_UNAUTH=true` (see `main.py`) |
 | `METATRACE_CORS_ORIGINS` | — | comma-separated CORS origins; empty = no CORS (same-origin SPA) |
+| `METATRACE_TRUSTED_PROXY` | `false` | when `true`, rate limiting trusts `X-Forwarded-For` / `X-Real-IP` (behind nginx/traefik). Leave `false` to avoid spoofing when not behind proxy |
 | `METATRACE_JWT_SECRET` | — | HS256 signing secret for access tokens. **Required when running internet-facing.** Min 32 chars. Generate with `python -c "import secrets; print(secrets.token_urlsafe(64))"`. Unset = single-server trusted-LAN mode (X-Admin-Token + open registration) |
+| `THUMBS_MAX_FILES` / `METATRACE_THUMBS_MAX_FILES` | `100000` | max thumbnails before LRU eviction (`0`=unbounded); 100k ≈5 GB at 256 px |
+| `SNAPSHOT_MAX_AGE_HOURS` / `METATRACE_SNAPSHOT_MAX_AGE_HOURS` | `24` | store snapshot staleness threshold (`0`=never stale); stale triggers filesystem walk |
+| `MAX_BROWSE_LIMIT` | `200` | max `limit` for `GET /api/images` (capped on server) |
 | `METATRACE_COOKIE_SECURE` | `true` | set the `Secure` flag on auth cookies. Set to `false` for local HTTP dev only |
 | `METATRACE_COOKIE_SAMESITE` | `lax` | SameSite attribute for auth cookies; `lax` blocks cross-site POSTs (recommended) |
 | `METATRACE_REFRESH_TOKEN_TTL_DAYS` | `7` | refresh-token lifetime in days |

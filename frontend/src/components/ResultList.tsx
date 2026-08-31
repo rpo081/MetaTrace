@@ -1,5 +1,6 @@
-import { authenticatedUrl } from '../api'
 import type { BrowseImage, SearchResult } from '../types'
+import { basename, formatBytes, formatDate, formatExt, xmpValue } from '../utils/format'
+import AuthenticatedImage from './AuthenticatedImage'
 
 interface Props {
   results: (SearchResult | BrowseImage)[]
@@ -7,48 +8,8 @@ interface Props {
   onSelect: (r: SearchResult | BrowseImage) => void
 }
 
-function basename(p: string): string {
-  return p.split(/[\\/]/).pop() ?? p
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
-}
-
 function formatDims(r: SearchResult | BrowseImage): string | null {
-  if (r.width != null && r.height != null) return `${r.width}×${r.height}`
-  return null
-}
-
-function formatExt(p: string): string {
-  const dot = p.lastIndexOf('.')
-  return dot >= 0 ? p.slice(dot + 1).toUpperCase() : ''
-}
-
-function formatDate(val: string | number | undefined): string | null {
-  if (val == null) return null
-  const d = new Date(typeof val === 'number' ? val * 1000 : val)
-  if (isNaN(d.getTime())) return null
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
-function fmtValue(v: unknown): string {
-  if (Array.isArray(v)) return v.join('; ')
-  if (typeof v === 'object' && v !== null) return JSON.stringify(v)
-  return String(v)
-}
-
-function xmpValue(xmp: Record<string, unknown> | undefined, attribute: string): string | null {
-  if (!xmp) return null
-  const attrLower = attribute.toLowerCase()
-  for (const [key, value] of Object.entries(xmp)) {
-    const tail = key.toLowerCase().split(':').pop() ?? key.toLowerCase()
-    if (tail === attrLower) return fmtValue(value)
-  }
-  return null
+  return r.width != null && r.height != null ? `${r.width}×${r.height}` : null
 }
 
 export default function ResultList({ results, selectedId, onSelect }: Props) {
@@ -98,12 +59,12 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
               aria-label={ariaParts.join(', ')}
               onClick={() => onSelect(r)}
             >
-              <img
+              <AuthenticatedImage
                 className="list-thumb"
-                src={authenticatedUrl(r.thumb_url)}
+                src={r.thumb_url}
                 loading="lazy"
                 alt=""
-                onError={(e) => { e.currentTarget.style.display = 'none' }}
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
               />
               <span className="list-info">
                 <span className="list-name" title={r.rel_path}>

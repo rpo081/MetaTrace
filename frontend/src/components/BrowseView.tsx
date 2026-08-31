@@ -16,16 +16,7 @@ import ResultList from './ResultList'
 import ViewToggle from './ViewToggle'
 import DetailPanel from './DetailPanel'
 import { SortAscIcon, SortDescIcon } from './Icon'
-
-const VIEW_MODE_KEY = 'metatrace_browse_view_mode'
-
-function loadViewMode(): ViewMode {
-  try {
-    const v = localStorage.getItem(VIEW_MODE_KEY)
-    if (v === 'list' || v === 'grid') return v
-  } catch { /* ignore */ }
-  return 'grid'
-}
+import { BROWSE_VIEW_MODE_KEY, loadViewMode, saveViewMode } from '../lib/storage'
 
 const SORT_OPTIONS: Array<{ value: BrowseSort; label: string }> = [
   { value: 'indexed_at', label: 'Date indexed' },
@@ -39,7 +30,7 @@ const SORT_OPTIONS: Array<{ value: BrowseSort; label: string }> = [
 
 export default function BrowseView() {
   const [filters, setFilters] = useState<BrowseFilters>({})
-  const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode)
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode(BROWSE_VIEW_MODE_KEY))
   const [sort, setSort] = useState<BrowseSort>('indexed_at')
   const [order, setOrder] = useState<BrowseOrder>('desc')
   const [offset, setOffset] = useState(0)
@@ -53,9 +44,9 @@ export default function BrowseView() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const prevQRef = useRef<BrowseFilters['q']>(undefined)
 
-  // Persist view mode
+  // Persist view mode via central storage abstraction
   useEffect(() => {
-    try { localStorage.setItem(VIEW_MODE_KEY, viewMode) } catch { /* ignore */ }
+    saveViewMode(BROWSE_VIEW_MODE_KEY, viewMode)
   }, [viewMode])
 
   const fetchData = useCallback(

@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
-from limits import parse as parse_limit
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-from slowapi.wrappers import Limit
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
+
+from ..rate_limit import check_rate_limit as _check_rate_limit
 
 from .. import db
 from ..auth import (
@@ -34,27 +33,6 @@ from ..models.auth import (
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-def _check_rate_limit(request: Request, limit_str: str) -> None:
-    limiter = request.app.state.limiter
-    item = parse_limit(limit_str)
-    # scope per endpoint to avoid cross-endpoint bucket sharing (e.g. login 10/min vs users 10/min)
-    key = f"{get_remote_address(request)}:{request.url.path}"
-    if not limiter._limiter.hit(item, key):
-        limit_wrapper = Limit(
-            limit=item,
-            key_func=get_remote_address,
-            scope=None,
-            per_method=False,
-            methods=None,
-            error_message=None,
-            exempt_when=None,
-            cost=1,
-            override_defaults=False,
-        )
-        request.state.view_rate_limit = (item, [key])
-        raise RateLimitExceeded(limit_wrapper)
 
 
 def _settings(request: Request) -> Settings:
@@ -90,6 +68,37 @@ def _clear_refresh_cookie(response: Response, settings: Settings) -> None:
     )
 
 
+def _access_cookie_name(settings: Settings) -> str:
+    return "__Host-metatrace_access" if settings.cookie_secure else "metatrace_access"
+
+
+def _set_access_cookie(response: Response, token: str, settings: Settings) -> None:
+    response.set_cookie(
+        key=_access_cookie_name(settings),
+        value=token,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="strict",
+        max_age=settings.access_token_ttl_minutes * 60,
+        path="/",
+    )
+
+
+def _clear_access_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        key=_access_cookie_name(settings),
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="strict",
+        path="/",
+    )
+
+
+class FileTokenRequest(BaseModel):
+    image_id: int = Field(..., ge=1)
+    ttl: int = Field(default=300, ge=30, le=3600)
+
+
 def _user_to_public(row) -> UserPublic:
     return UserPublic(
         id=row["id"],
@@ -112,7 +121,7 @@ async def register(
     body: RegisterRequest,
     admin=Depends(require_role("admin")),
 ):
-    _check_rate_limit(request, "5/minute")
+    _check_rate_limit(request, "5/minute", per_endpoint=True)
     settings = _settings(request)
     db_path = settings.db_path
 
@@ -145,7 +154,7 @@ async def register(
 
 @router.post("/login", response_model=LoginResponse)
 async def login(request: Request, body: LoginRequest, response: Response):
-    _check_rate_limit(request, "10/minute")
+    _check_rate_limit(request, "10/minute", per_endpoint=True)
     settings = _settings(request)
     db_path = settings.db_path
 
@@ -195,6 +204,8 @@ async def login(request: Request, body: LoginRequest, response: Response):
     )
 
     _set_refresh_cookie(response, refresh_raw, settings)
+    _set_access_cookie(response, access_token, settings)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
 
     audit(db_path, user_id=row["id"], action="login",
           ip_address=request.client.host if request.client else None,
@@ -224,6 +235,7 @@ async def logout(
         revoke_refresh_token(db_path, refresh_token)
 
     _clear_refresh_cookie(response, settings)
+    _clear_access_cookie(response, settings)
 
     audit(db_path, user_id=user["id"], action="logout",
           ip_address=request.client.host if request.client else None,
@@ -242,7 +254,7 @@ async def refresh(
     response: Response,
     refresh_token: str | None = Cookie(default=None, alias="refresh_token"),
 ):
-    _check_rate_limit(request, "5/minute")
+    _check_rate_limit(request, "5/minute", per_endpoint=True)
     if not refresh_token:
         raise HTTPException(401, "no refresh token")
 
@@ -276,6 +288,8 @@ async def refresh(
     )
 
     _set_refresh_cookie(response, new_raw, settings)
+    _set_access_cookie(response, access_token, settings)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
 
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -285,7 +299,8 @@ async def refresh(
 # ---------------------------------------------------------------------------
 
 @router.get("/me", response_model=MeResponse)
-async def me(request: Request, user=Depends(get_current_user)):
+async def me(request: Request, response: Response, user=Depends(get_current_user)):
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     settings = _settings(request)
     # Re-fetch the row to get the current must_change_password flag — the
     # `user` passed by the dependency is a sqlite3.Row that may have been
@@ -299,6 +314,47 @@ async def me(request: Request, user=Depends(get_current_user)):
 
 
 # ---------------------------------------------------------------------------
+# GET/POST /api/auth/file-token — HMAC signed URL for /api/file/{id}
+# ---------------------------------------------------------------------------
+
+@router.post("/file-token")
+async def create_file_token_post(
+    request: Request,
+    body: FileTokenRequest,
+    user=Depends(require_role("admin", "editor", "viewer")),
+):
+    _check_rate_limit(request, "30/minute", per_endpoint=True)
+    settings = _settings(request)
+    if not settings.jwt_secret:
+        raise HTTPException(500, "JWT secret not configured")
+    from ..auth import build_signed_file_url
+    import time
+
+    url = build_signed_file_url(settings.jwt_secret, body.image_id, body.ttl)
+    exp = int(time.time()) + body.ttl
+    return {"url": url, "exp": exp}
+
+
+@router.get("/file-token")
+async def create_file_token_get(
+    request: Request,
+    image_id: int = Query(..., ge=1),
+    ttl: int = Query(300, ge=30, le=3600),
+    user=Depends(require_role("admin", "editor", "viewer")),
+):
+    _check_rate_limit(request, "30/minute", per_endpoint=True)
+    settings = _settings(request)
+    if not settings.jwt_secret:
+        raise HTTPException(500, "JWT secret not configured")
+    from ..auth import build_signed_file_url
+    import time
+
+    url = build_signed_file_url(settings.jwt_secret, image_id, ttl)
+    exp = int(time.time()) + ttl
+    return {"url": url, "exp": exp}
+
+
+# ---------------------------------------------------------------------------
 # POST /api/auth/change-password
 # ---------------------------------------------------------------------------
 
@@ -308,7 +364,7 @@ async def change_password(
     body: ChangePasswordRequest,
     user=Depends(get_current_user),
 ):
-    _check_rate_limit(request, "10/minute")
+    _check_rate_limit(request, "10/minute", per_endpoint=True)
     settings = _settings(request)
     db_path = settings.db_path
 

@@ -1,11 +1,22 @@
-"""Runtime configuration, overridable via environment variables or a .env file."""
+"""Runtime configuration, overridable via environment variables or a .env file.
+
+``.env`` loading:
+    Pydantic-settings reads ``.env`` from the current working directory (CWD) at
+    import time. When running via ``uvicorn app.main:app --app-dir backend`` the
+    CWD is typically the repo root, so ``.env`` at ``<repo>/.env`` is picked up.
+    If you launch the server from a different directory, set ``STORE_PATH``,
+    ``METATRACE_JWT_SECRET`` etc. via environment variables instead, or pass
+    ``env_file`` explicitly. ``Settings()`` without args will *not* search parent
+    directories — it only looks at ``./.env`` relative to the process CWD.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import field_validator
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .file_rules import ALLOWED_EXTENSIONS
 
 
 class Settings(BaseSettings):
@@ -65,7 +76,7 @@ class Settings(BaseSettings):
         description="Max age in hours before store snapshot is considered stale (0=never stale). Walk fallback.",
     )
 
-    allowed_extensions: str = ".psd,.jpg,.jpeg,.png,.tif,.tiff"
+    allowed_extensions: str = ",".join(sorted(ALLOWED_EXTENSIONS))
 
     # Shared secret for mutating endpoints (POST /api/rescan). When unset the
     # API runs in trusted-LAN mode: mutations are allowed but a warning is
@@ -121,6 +132,13 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("METATRACE_CORS_ORIGINS", "CORS_ORIGINS"),
     )
 
+    # When True, `X-Forwarded-For` is trusted for rate-limit keys (behind reverse proxy).
+    # Otherwise the direct remote address is used to avoid spoofing.
+    trusted_proxy: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("METATRACE_TRUSTED_PROXY", "TRUSTED_PROXY"),
+    )
+
     @field_validator("network_root", "admin_token", "cors_origins", mode="before")
     @classmethod
     def _blank_strings_to_none(cls, value: str | None) -> str | None:
@@ -128,6 +146,15 @@ class Settings(BaseSettings):
             return None
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("admin_token", mode="after")
+    @classmethod
+    def _admin_token_min_length(cls, value: str | None) -> str | None:
+        if value is not None and len(value) < 32:
+            raise ValueError(
+                "admin_token must be at least 32 characters (use `python -c \"import secrets; print(secrets.token_urlsafe(32))\"`)"
+            )
         return value
 
     @property

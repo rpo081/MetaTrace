@@ -1,52 +1,10 @@
-// Thin wrappers around /api/auth/* and /api/users/*.
-// Reuses the existing `ApiError` from ../../api.ts so every call site gets
-// identical status-code semantics for free. The `authHeaders()` helper in
-// ../../api.ts is module-private — we build our own here that mirrors its
-// behavior exactly (Bearer access token first, then legacy admin token).
-// Key constants match ../../api.ts so a token written via either path is
-// readable from both.
-
 import { ApiError } from '../../api'
-
-const ACCESS_TOKEN_KEY = 'metatrace_access_token'
-const ADMIN_TOKEN_KEY = 'metatrace_admin_token'
-
-export function getAccessToken(): string | null {
-  try {
-    return localStorage.getItem(ACCESS_TOKEN_KEY)
-  } catch {
-    return null
-  }
-}
-
-export function setAccessToken(token: string | null): void {
-  try {
-    if (token) localStorage.setItem(ACCESS_TOKEN_KEY, token)
-    else localStorage.removeItem(ACCESS_TOKEN_KEY)
-  } catch {
-    /* ignore — storage unavailable (privacy mode etc.) */
-  }
-}
-
-function getAdminToken(): string | null {
-  try {
-    return localStorage.getItem(ADMIN_TOKEN_KEY)
-  } catch {
-    return null
-  }
-}
-
-function buildAuthHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {}
-  const access = getAccessToken()
-  if (access) {
-    headers['Authorization'] = `Bearer ${access}`
-  } else {
-    const token = getAdminToken()
-    if (token) headers['X-Admin-Token'] = token
-  }
-  return headers
-}
+import {
+  authHeaders as buildAuthHeaders,
+  getAccessToken,
+  setAccessToken,
+} from '../../lib/authStorage'
+export { getAccessToken, setAccessToken } from '../../lib/authStorage'
 
 export type Role = 'admin' | 'editor' | 'viewer'
 
@@ -134,9 +92,19 @@ export async function refreshAccessToken(): Promise<string | null> {
 }
 
 export async function fetchMe(): Promise<MeResponse> {
-  const res = await fetch('/api/auth/me', { headers: buildAuthHeaders() })
+  const res = await fetch('/api/auth/me', { headers: buildAuthHeaders(), credentials: 'include' })
   if (!res.ok) await throwApiError(res)
   return res.json()
+}
+
+export async function getSignedFileUrl(imageId: number): Promise<string> {
+  const res = await fetch(`/api/auth/file-token?image_id=${imageId}`, {
+    headers: buildAuthHeaders(),
+    credentials: 'include',
+  })
+  if (!res.ok) await throwApiError(res)
+  const data = await res.json()
+  return data.url as string
 }
 
 export async function changeOwnPassword(current: string, next: string): Promise<void> {
@@ -144,6 +112,7 @@ export async function changeOwnPassword(current: string, next: string): Promise<
     method: 'POST',
     headers: { ...buildAuthHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ current_password: current, new_password: next }),
+    credentials: 'include',
   })
   if (!res.ok) await throwApiError(res)
 }
@@ -153,7 +122,7 @@ export async function changeOwnPassword(current: string, next: string): Promise<
 // ---------------------------------------------------------------------------
 
 export async function listUsers(): Promise<UserListItem[]> {
-  const res = await fetch('/api/users', { headers: buildAuthHeaders() })
+  const res = await fetch('/api/users', { headers: buildAuthHeaders(), credentials: 'include' })
   if (!res.ok) await throwApiError(res)
   const data = await res.json()
   return data.users
@@ -164,6 +133,7 @@ export async function createUser(body: UserCreateRequest): Promise<UserListItem>
     method: 'POST',
     headers: { ...buildAuthHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    credentials: 'include',
   })
   if (!res.ok) await throwApiError(res)
   return res.json()
@@ -174,6 +144,7 @@ export async function updateUser(id: number, body: UserUpdateRequest): Promise<U
     method: 'PATCH',
     headers: { ...buildAuthHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    credentials: 'include',
   })
   if (!res.ok) await throwApiError(res)
   return res.json()
@@ -183,6 +154,7 @@ export async function deleteUser(id: number): Promise<void> {
   const res = await fetch(`/api/users/${id}`, {
     method: 'DELETE',
     headers: buildAuthHeaders(),
+    credentials: 'include',
   })
   if (!res.ok) await throwApiError(res)
 }
@@ -192,6 +164,7 @@ export async function adminResetPassword(id: number, newPassword: string): Promi
     method: 'POST',
     headers: { ...buildAuthHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ new_password: newPassword }),
+    credentials: 'include',
   })
   if (!res.ok) await throwApiError(res)
 }

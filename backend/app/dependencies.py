@@ -110,6 +110,14 @@ async def get_current_user_or_legacy_token(
     if credentials is not None:
         return _decode_user_row(request, credentials.credentials)
 
+    # 1b. Try JWT from httpOnly access cookie (A1)
+    cookie_tok = request.cookies.get("__Host-metatrace_access") or request.cookies.get("metatrace_access")
+    if cookie_tok:
+        try:
+            return _decode_user_row(request, cookie_tok)
+        except HTTPException:
+            pass
+
     # 2. Fall back to legacy X-Admin-Token header
     expected = settings.admin_token
     if expected:
@@ -156,6 +164,47 @@ async def get_current_user_or_legacy_token(
 # Layer 2c – JWT-or-legacy-token with query param fallback (for image URLs)
 # ---------------------------------------------------------------------------
 
+def _verify_signed_file_token(request: Request, settings: Settings):
+    """Validate HMAC signed URL ?sig=&exp= for file/thumb. Returns synthetic viewer on success."""
+    import hashlib
+    import hmac
+    import time
+
+    sig = request.query_params.get("sig")
+    exp_s = request.query_params.get("exp")
+    if not (sig and exp_s):
+        return None
+    if not settings.jwt_secret:
+        raise HTTPException(401, "signed url requires JWT secret")
+    image_id = request.path_params.get("image_id") or request.path_params.get("id")
+    if image_id is None:
+        return None
+    try:
+        exp = int(exp_s)
+        fid = int(image_id)
+    except ValueError:
+        raise HTTPException(400, "invalid sig/exp")
+    now = int(time.time())
+    if exp < now:
+        raise HTTPException(401, "signature expired")
+    if exp > now + 3600:
+        raise HTTPException(400, "exp too far in future")
+    expected = hmac.new(settings.jwt_secret.encode(), f"{fid}:{exp}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        raise HTTPException(401, "invalid signature")
+    return {
+        "id": 0,
+        "__signed__": True,
+        "username": "_signed_url",
+        "email": "signed@metatrace.local",
+        "role": "viewer",
+        "is_active": True,
+        "created_at": "",
+        "last_login": None,
+        "must_change_password": 0,
+    }
+
+
 async def get_current_user_or_legacy_token_with_query(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
@@ -167,6 +216,7 @@ async def get_current_user_or_legacy_token_with_query(
     the frontend appends ``?token=<JWT-or-admin-token>`` so the image request
     can still be authenticated.  Query token is treated with same precedence
     as the header fallback (JWT first, then legacy admin token).
+    Prefer HMAC signed URL (``?sig=&exp=``) over ``?token=`` to avoid JWT leakage.
     """
     settings: Settings = request.app.state.settings
 
@@ -174,7 +224,20 @@ async def get_current_user_or_legacy_token_with_query(
     if credentials is not None:
         return _decode_user_row(request, credentials.credentials)
 
-    # 1b. Try JWT from query param ``token`` or ``access_token``
+    # 1b. Try JWT from httpOnly access cookie (__Host- prefix)
+    cookie_tok = request.cookies.get("__Host-metatrace_access") or request.cookies.get("metatrace_access")
+    if cookie_tok:
+        try:
+            return _decode_user_row(request, cookie_tok)
+        except HTTPException:
+            pass
+
+    # 1c. Try HMAC signed URL ?sig=&exp= (C-02)
+    signed = _verify_signed_file_token(request, settings)
+    if signed is not None:
+        return signed
+
+    # 1d. Try JWT from query param ``token`` or ``access_token``
     qp_token = request.query_params.get("token") or request.query_params.get("access_token")
     if qp_token:
         try:
@@ -226,6 +289,20 @@ async def get_current_user_or_legacy_token_with_query(
         "created_at": "",
         "last_login": None,
     }
+
+
+def get_settings(request: Request) -> Settings:
+    """Return the app's ``Settings`` instance.
+
+    Prefers ``request.app.state.settings`` (set in ``main.lifespan``) so tests
+    that inject a custom ``Settings`` via ``create_app(settings)`` see the same
+    object. Falls back to a fresh ``Settings()`` which reads ``.env`` from CWD
+    (pydantic-settings behaviour).
+    """
+    state = getattr(request.app, "state", None)
+    if state is not None and hasattr(state, "settings") and state.settings is not None:  # type: ignore[union-attr]
+        return state.settings  # type: ignore[return-value]
+    return Settings()
 
 
 def require_role_with_query(*roles: str):
