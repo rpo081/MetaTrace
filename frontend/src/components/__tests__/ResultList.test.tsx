@@ -15,21 +15,22 @@ describe('ResultList', () => {
     const list = screen.getByRole('list')
     expect(list).toBeInTheDocument()
     const buttons = screen.getAllByRole('button')
-    expect(buttons.length).toBe(2)
+    expect(buttons.length).toBe(4)
   })
 
   it('aria-pressed reflects selection', () => {
     const onSelect = vi.fn()
     render(<ResultList results={mockResults as any} selectedId={2} onSelect={onSelect} />)
-    const buttons = screen.getAllByRole('button')
-    expect(buttons[0]).toHaveAttribute('aria-pressed', 'false')
-    expect(buttons[1]).toHaveAttribute('aria-pressed', 'true')
+    const rows = screen.getAllByRole('button', { name: /a\.png|Open a\.png/ })
+    expect(rows[0]).toHaveAttribute('aria-pressed', 'false')
+    const second = screen.getAllByRole('button', { name: /b\.jpg|Open b\.jpg/ })
+    expect(second[0]).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('calls onSelect on click and has aria-label', () => {
     const onSelect = vi.fn()
     render(<ResultList results={mockResults as any} selectedId={null} onSelect={onSelect} />)
-    const btn = screen.getAllByRole('button')[0]
+    const btn = screen.getAllByRole('button', { name: /a\.png|Open a\.png/ })[0]
     expect(btn.getAttribute('aria-label')).toContain('a.png')
     fireEvent.click(btn)
     expect(onSelect).toHaveBeenCalled()

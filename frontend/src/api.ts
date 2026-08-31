@@ -8,7 +8,7 @@ import type {
   Stats,
   RescanDeltaResponse,
 } from './types'
-import { authHeaders } from './lib/authStorage'
+import { fetchWithAuth } from './lib/authStorage'
 export { authenticatedUrl } from './lib/authStorage'
 
 /** Error carrying the HTTP status so callers can special-case codes (e.g. 409). */
@@ -25,7 +25,7 @@ export class ApiError extends Error {
 /** Map HTTP status codes to user-friendly messages. */
 const STATUS_MESSAGES: Record<number, string> = {
   400: 'Invalid request. Please check your input and try again.',
-  401: 'Authentication required. Please check your admin token.',
+  401: 'Your session has expired. Please log in again.',
   403: 'Access denied. You do not have permission for this action.',
   404: 'Resource not found.',
   409: 'A scan is already running. Please wait for it to finish.',
@@ -76,43 +76,41 @@ export async function searchImage(
   if (q && q.trim()) {
     params.set('q', q.trim())
   }
-  const res = await fetch(`/api/search?${params.toString()}`, {
+  const res = await fetchWithAuth(`/api/search?${params.toString()}`, {
     method: 'POST',
-    headers: authHeaders(),
     body: form,
     signal,
-    credentials: 'include',
   })
   if (!res.ok) await parseError(res)
   return res.json()
 }
 
 export async function getStats(signal?: AbortSignal): Promise<Stats> {
-  const res = await fetch('/api/stats', { headers: authHeaders(), signal, credentials: 'include' })
+  const res = await fetchWithAuth('/api/stats', { signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }
 
 export async function triggerRescan(rebuild = false, useDelta = true): Promise<void> {
-  const res = await fetch(
+  const res = await fetchWithAuth(
     `/api/rescan?rebuild=${rebuild}&use_delta=${useDelta}`,
-    { method: 'POST', headers: authHeaders(), credentials: 'include' },
+    { method: 'POST' },
   )
   if (!res.ok) await parseError(res)
 }
 
 export async function pauseRescan(): Promise<void> {
-  const res = await fetch('/api/rescan/pause', { method: 'POST', headers: authHeaders(), credentials: 'include' })
+  const res = await fetchWithAuth('/api/rescan/pause', { method: 'POST' })
   if (!res.ok) await parseError(res)
 }
 
 export async function resumeRescan(): Promise<void> {
-  const res = await fetch('/api/rescan/resume', { method: 'POST', headers: authHeaders(), credentials: 'include' })
+  const res = await fetchWithAuth('/api/rescan/resume', { method: 'POST' })
   if (!res.ok) await parseError(res)
 }
 
 export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaResponse> {
-  const res = await fetch('/api/rescan-delta', { headers: authHeaders(), signal, credentials: 'include' })
+  const res = await fetchWithAuth('/api/rescan-delta', { signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }
@@ -142,7 +140,7 @@ export async function browseImages(
       sp.set(k, String(v))
     }
   }
-  const res = await fetch(`/api/images?${sp.toString()}`, { headers: authHeaders(), signal, credentials: 'include' })
+  const res = await fetchWithAuth(`/api/images?${sp.toString()}`, { signal })
   if (!res.ok) await parseError(res)
   return res.json()
 }

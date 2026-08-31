@@ -409,7 +409,7 @@ def thumb(
     s: Settings = Depends(get_settings),
     user=Depends(require_role_with_query("admin", "editor", "viewer")),
 ) -> FileResponse:
-    _check_rate_limit(request, "60/minute")
+    _check_rate_limit(request, "240/minute")
     st = request.app.state
     row = _get_row_or_404(request, image_id)
     side = min(max(size or s.thumb_size, 64), 1024)

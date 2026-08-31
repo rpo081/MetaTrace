@@ -52,28 +52,47 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
 
         return (
           <div key={r.id} className="result-list-item" role="listitem">
-            <button
-              type="button"
+            <div
               className={`list-row ${isSelected ? 'list-row-selected' : ''}`}
+              role="button"
+              tabIndex={0}
               aria-pressed={isSelected}
               aria-label={ariaParts.join(', ')}
-              onClick={() => onSelect(r)}
+              onClick={(e) => {
+                const sel = typeof window !== 'undefined' ? window.getSelection()?.toString() : ''
+                if (sel) return
+                if ((e.target as HTMLElement).closest('button')) return
+                onSelect(r)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onSelect(r)
+                }
+              }}
             >
-              <AuthenticatedImage
-                className="list-thumb"
-                src={r.thumb_url}
-                loading="lazy"
-                alt=""
-                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-              />
-              <span className="list-info">
-                <span className="list-name" title={r.rel_path}>
+              <button
+                type="button"
+                className="list-thumb-btn"
+                aria-label={`Open ${basename(r.rel_path)}`}
+                onClick={() => onSelect(r)}
+              >
+                <AuthenticatedImage
+                  className="list-thumb"
+                  src={r.thumb_url}
+                  loading="lazy"
+                  alt=""
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                />
+              </button>
+              <div className="list-info">
+                <div className="list-name" title={r.rel_path}>
                   {basename(r.rel_path)}
-                </span>
-                <span className="list-path mono" title={r.rel_path}>
+                </div>
+                <div className="list-path mono" title={r.rel_path}>
                   {r.rel_path}
-                </span>
-                <span className="list-details muted">
+                </div>
+                <div className="list-details muted">
                   {dims && <span>{dims}</span>}
                   {dims && ext && <span className="list-detail-sep" aria-hidden>·</span>}
                   {ext && <span>{ext}</span>}
@@ -81,24 +100,24 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
                   {fileSize && <span>{fileSize}</span>}
                   {(dims || ext || fileSize) && dateStr && <span className="list-detail-sep" aria-hidden>·</span>}
                   {dateStr && <span>{dateStr}</span>}
-                </span>
+                </div>
                 {tags.length > 0 && (
-                  <span className="list-tags">
+                  <div className="list-tags">
                     {tags.map((t) => (
                       <span key={t.label} className="list-tag" title={`${t.label}: ${t.value}`}>
                         <span className="list-tag-label">{t.label}:</span>{' '}
                         <span className="list-tag-value">{t.value}</span>
                       </span>
                     ))}
-                  </span>
+                  </div>
                 )}
                 {'score' in r && r.score != null && (
-                  <span className="list-score muted">
+                  <div className="list-score muted">
                     {Math.round(r.score * 100)}% match
-                  </span>
+                  </div>
                 )}
-              </span>
-            </button>
+              </div>
+            </div>
           </div>
         )
       })}

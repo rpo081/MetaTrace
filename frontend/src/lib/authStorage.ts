@@ -105,3 +105,43 @@ export function authenticatedUrl(url: string): string {
   const sep = url.includes('?') ? '&' : '?'
   return `${url}${sep}token=${encodeURIComponent(token)}`
 }
+
+// ---------------------------------------------------------------------------
+// fetchWithAuth: central 401 → silent refresh → single retry.
+//
+// AuthProvider registers the in-flight refresh promise via setPendingRefresh()
+// while a refresh is in flight (or right before issuing one). fetchWithAuth
+// consults that slot on 401; if a refresh handler is present, it waits for
+// the new token and retries the request exactly once with the fresh
+// Authorization header. If no handler is registered, the 401 is returned
+// untouched so callers can render the login screen.
+// ---------------------------------------------------------------------------
+
+let pendingRefresh: Promise<string | null> | null = null
+
+export function setPendingRefresh(p: Promise<string | null> | null): void {
+  pendingRefresh = p
+}
+
+function currentRefresh(): Promise<string | null> | null {
+  return pendingRefresh
+}
+
+export async function fetchWithAuth(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers || {})
+  const access = getAccessToken()
+  if (access) headers.set('Authorization', `Bearer ${access}`)
+  else {
+    const token = getAdminToken()
+    if (token) headers.set('X-Admin-Token', token)
+  }
+  const first = await fetch(input, { ...init, headers, credentials: 'include' })
+  if (first.status !== 401) return first
+  const refreshP = currentRefresh()
+  if (!refreshP) return first
+  const newToken = await refreshP
+  if (!newToken) return first
+  const retryHeaders = new Headers(init.headers || {})
+  retryHeaders.set('Authorization', `Bearer ${newToken}`)
+  return fetch(input, { ...init, headers: retryHeaders, credentials: 'include' })
+}

@@ -51,11 +51,11 @@ describe('ApiError mapping via api.ts', () => {
     await expect(searchImage(null, 10, 0, 'q')).rejects.toThrow(expect.objectContaining({ status: 400 }))
     try { await searchImage(null, 10, 0, 'q') } catch (e:any) { expect(e.message).toContain('Invalid request') }
   })
-  it('maps 401 to authentication required', async () => {
+  it('maps 401 to session expired', async () => {
     const { getStats } = await import('../../api')
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized', json: async () => ({ detail: 'unauth' }) } as Response)
     await expect(getStats()).rejects.toThrow(expect.objectContaining({ status: 401 }))
-    try { await getStats() } catch (e:any) { expect(e.message).toMatch(/Authentication required/) }
+    try { await getStats() } catch (e:any) { expect(e.message).toMatch(/session has expired/i) }
   })
   it('maps 403, 404, 409, 413, 429, 500', async () => {
     const { getStats } = await import('../../api')

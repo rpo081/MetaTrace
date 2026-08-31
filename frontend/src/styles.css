@@ -125,6 +125,17 @@ a:hover {
   gap: var(--space-3);
   min-width: 0;
 }
+button.topbar-brand {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
 .topbar h1 {
   font-size: var(--text-xl);
   margin: 0;
@@ -1278,6 +1289,21 @@ input[type='checkbox'] {
   font: inherit;
   box-shadow: var(--shadow-1);
   transition: border-color 0.15s ease, background-color 0.1s ease, box-shadow 0.15s ease;
+}
+.list-row,
+.list-info,
+.list-info * {
+  user-select: text;
+}
+.list-thumb-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  line-height: 0;
+  flex-shrink: 0;
 }
 .list-row:hover {
   border-color: var(--accent);

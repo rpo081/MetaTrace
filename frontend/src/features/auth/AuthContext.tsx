@@ -9,6 +9,7 @@ import {
 } from 'react'
 
 import { ApiError } from '../../api'
+import { setPendingRefresh } from '../../lib/authStorage'
 import {
   changeOwnPassword as apiChangeOwnPassword,
   fetchMe,
@@ -158,10 +159,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async (): Promise<string | null> => {
     if (inflightRefresh.current) return inflightRefresh.current
-    const p = refreshAccessToken().finally(() => {
-      inflightRefresh.current = null
-    })
+    const p = (async () => {
+      try {
+        const t = await refreshAccessToken()
+        if (t) setAccessToken(t)
+        return t
+      } finally {
+        // No-op: cleanup happens in inflightRefresh.finally below.
+      }
+    })()
     inflightRefresh.current = p
+    setPendingRefresh(p)
+    p.finally(() => {
+      inflightRefresh.current = null
+      setPendingRefresh(null)
+    })
     const token = await p
     if (!token) {
       setAccessToken(null)

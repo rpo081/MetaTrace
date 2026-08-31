@@ -210,12 +210,17 @@ export default function PageShell({
       <a href="#main-content" className="skip-link">Skip to content</a>
       <header className="topbar">
         <div className="topbar-row">
-          <div className="topbar-brand">
+          <button
+            type="button"
+            className="topbar-brand"
+            onClick={() => onPageChange('search')}
+            aria-label="Go to home"
+          >
             <div>
               <h1>MetaTrace</h1>
               <div className="topbar-subtitle muted">Reverse image search</div>
             </div>
-          </div>
+          </button>
           <div className="topbar-stats">
             {stats && scanActive ? (
               <>
