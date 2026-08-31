@@ -28,6 +28,14 @@ docker compose up -d --build
 # open http://localhost:8000
 ```
 
+> **First-run credentials:** When the users table is empty and `METATRACE_ADMIN_TOKEN`
+> is unset, MetaTrace seeds a single `admin` user with password `changeme` and marks
+> the account `must_change_password=true`. **All endpoints except
+> `/api/auth/change-password`, `/logout`, and `/me` return 403 until the password
+> is changed.** Set `METATRACE_ADMIN_TOKEN` (≥32 chars; e.g.
+> `python -c "import secrets; print(secrets.token_urlsafe(32))"`) **before** the
+> first start to use it as the seed password instead.
+
 The container mounts your local image mirror read-only at `/store`; database,
 FAISS index and thumbnails live under the host bind mount `./data:/data`. On first start an
 initial scan kicks off automatically (progress via `GET /api/stats`). CLIP

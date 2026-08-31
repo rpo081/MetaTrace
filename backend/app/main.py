@@ -182,6 +182,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "(trusted-LAN mode). Set METATRACE_ADMIN_TOKEN to require authentication."
             )
 
+        if not settings.cookie_secure and not settings.allow_unauthenticated:
+            log.warning(
+                "METATRACE_COOKIE_SECURE is false — auth cookies will be sent over "
+                "plaintext HTTP and are vulnerable to network interception. Use only "
+                "for local HTTP development; set METATRACE_COOKIE_SECURE=true (default) "
+                "for any internet-facing deployment."
+            )
+
         if not settings.jwt_secret and not settings.allow_unauthenticated:
             # A-4 hardening: internet-facing deployments must set JWT secret.
             # Keep warning (not crash) to preserve legacy X-Admin-Token mode,
