@@ -2,7 +2,7 @@
 
 ## What this is
 
-MetaTrace: reverse image search over ~20k local PSD/JPG/PNG renderings. FastAPI backend (`backend/app`) + React/Vite/TS frontend (`frontend/src`), SQLite metadata + FAISS flat inner-product index, open_clip ViT-B-32 QuickGELU (OpenAI weights, CUDA-capable when Docker exposes an NVIDIA GPU; FAISS remains CPU-only). `plan.md` is the original design doc, `README.md` documents API/env vars/security posture — both current; trust them over prose elsewhere. `research.md` and `result-*.md` are one-off audit artifacts, not docs.
+MetaTrace: reverse image search over ~20k local PSD/JPG/PNG renderings. FastAPI backend (`backend/app`) + React/Vite/TS frontend (`frontend/src`), SQLite metadata + FAISS flat inner-product index, open_clip ViT-B-32 QuickGELU (OpenAI weights, CUDA via Docker GPU overlay; FAISS CPU-only). `plan.md` is original design, `README.md` documents API/env/security — trust them over prose elsewhere. `research.md`/`result-*.md` are one-off audit artifacts.
 
 ## Commands
 
@@ -11,44 +11,57 @@ MetaTrace: reverse image search over ~20k local PSD/JPG/PNG renderings. FastAPI 
 python -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt
 cd frontend && npm install
 
-# backend tests (from REPO ROOT — see Testing)
+# backend tests (from REPO ROOT only — see Testing)
 .venv/bin/python -m pytest                                  # whole suite, offline, ~1 s
 .venv/bin/python -m pytest backend/tests/test_api.py -k upload   # single file/-k filter
 
-# frontend — package.json has NO lint/typecheck script; call tsc directly
+# frontend
 cd frontend
-./node_modules/.bin/tsc --noEmit        # typecheck
+./node_modules/.bin/tsc --noEmit        # typecheck (no lint script)
 npm run build                           # production build
+npm test                                # vitest run (23 tests)
 
-# dev servers (two terminals; vite proxies /api -> :8000)
-(cd backend && STORE_PATH=/tmp/store DATA_PATH=/tmp/data ../.venv/bin/uvicorn app.main:app --reload)
+# dev servers — vite proxies /api -> :8000
+# Real DB + store (current data, indexed=6):
+STORE_PATH=/Users/ralf/Desktop/MetaTrace_Store DATA_PATH=$PWD/data ../.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+# Isolated throwaway (empty DB):
+# STORE_PATH=/tmp/store DATA_PATH=/tmp/data ../.venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 (cd frontend && npm run dev)
 ```
 
-No CI, lint, or pre-commit config exists. Full local verification = pytest + tsc + vite build.
+No CI/lint/pre-commit. Full verification = `pytest + tsc + vite build` (+ `npm test` for frontend).
 
 ## Testing
 
-- Run pytest from repo root only: root `conftest.py` puts the repo root on sys.path so tests import `backend.app.*`. From `backend/` those imports break.
-- Suite runs fully offline — a fake-embedder fixture pattern replaces CLIP (see `backend/tests/test_indexer.py`). Real weights (~600 MB) load only outside tests, on first search/scan, unless baked into the image.
+- **Must run pytest from repo root**: root `conftest.py` puts repo root on `sys.path` so `backend.app.*` imports resolve. From `backend/` they break.
+- **Offline**: fake-embedder fixture replaces CLIP (`backend/tests/test_indexer.py`); real weights (~600 MB) load only on first search/scan unless baked into image.
 - `test_sync_images.py` exercises `scripts/sync_images.py` via `backend/tests/sync_module.py`.
-- `httpx` is dev-only (TestClient dependency) — don't import it in app code.
+- `httpx` is dev-only (TestClient) — never import in app code.
+- Frontend uses `vitest` + `jsdom` + `@testing-library/react`; config in `frontend/vite.config.ts`.
 
-## Invariants (each guards a bug that actually happened)
+## Invariants (each guards a past bug)
 
-- **FAISS publish/swap:** the published index object is never mutated after publication. Scans mutate `faiss.clone_index(self.index)` and swap atomically under `_lock`; searches snapshot the reference and query lock-free (FAISS releases the GIL — concurrent read+write on one index is UB). See `indexer.py`.
-- **Path containment:** every store file served goes through `_store_file()` in `api/routes.py` (resolve + `is_relative_to`). Never join a DB `rel_path` onto the store root directly — the thumbnail route once lacked this and allowed symlink escape.
-- **Self-healing index:** startup reconciles FAISS vector ids against DB row ids as *sets*: orphan vectors are removed, rows without a vector are pruned (next scan re-embeds exactly those files). Corrupt/missing index files are quarantined as `.faiss.corrupt*` and force a full rebuild. Scans publish their working index periodically (clone → swap, never mutate a published object), so an interrupted scan costs ≤1 chunk — do NOT reintroduce count-compare + full-rebuild on mismatch; that caused a rescan-from-zero crash loop. Deleting `index.faiss` is safe by design.
-- **Atomic writes + streamed uploads:** thumbnails write via mkstemp + os.replace; uploads stream in chunks with early-abort 413. Reuse these patterns for new file-touching endpoints.
-- **Error hygiene:** client-facing error detail stays generic (full exceptions go to server logs); `/api/stats` exposes counts only, no filesystem paths or network topology.
-- **Keyboard accessibility:** interactive UI must be reachable by keyboard (real `<button>`s or tabIndex + Enter/Space) and AA contrast. Result cards/dropzone were once divs — WCAG failure.
-- **Auth (multi-user):** all new mutating endpoints must use `Depends(require_role("admin"))` / `("admin", "editor")` from `app/dependencies.py` — never roll your own role check. All read endpoints (`/api/search`, `/api/images`, `/api/stats`, `/api/rescan-delta`, `/api/settings/store-snapshot`, `/api/thumb/{id}`, `/api/file/{id}`) are also gated behind `require_role("admin","editor","viewer")` (thumb/file allow query `?token=` for `<img src>` auth). Password strength (≥12 chars, ≥1 uppercase, ≥1 lowercase, ≥1 digit) is enforced by the Pydantic models in `app/models/auth.py`; reuse them for new password fields. New admin endpoints must rate-limit via the local `_check_rate_limit(request, "10/minute")` helper in their router (mirrors `routes.py`). Refresh-token cookie is scoped to `path=/api/auth/refresh` — do not broaden it. See `backend/app/auth.py` for token primitives; `dependencies.py` for the dependency chain.
+- **FAISS publish/swap:** never mutate published index. Scans mutate `faiss.clone_index(self.index)` and swap atomically under `_lock`; searches snapshot reference lock-free (FAISS releases GIL — concurrent read+write is UB). See `indexer.py`.
+- **Path containment:** every store file via `_store_file()` in `api/routes.py` (resolve + `is_relative_to`). Never join `rel_path` directly — thumb route once allowed symlink escape.
+- **Self-healing index:** startup reconciles FAISS ids vs DB row ids as *sets* (orphans removed, missing rows pruned — next scan re-embeds). Corrupt/missing index quarantined as `.faiss.corrupt*` → full rebuild. Scans publish working index periodically (clone→swap); interrupted scan costs ≤1 chunk. Don't reintroduce count-compare full-rebuild (crash loop). Deleting `index.faiss` is safe.
+- **Atomic writes + streamed uploads:** thumbs via mkstemp+os.replace; uploads stream in 1 MiB chunks with early-abort 413. Reuse for new file endpoints.
+- **Error hygiene:** client detail generic (full trace to server log); `/api/stats` exposes counts only, no paths/topology.
+- **Keyboard accessibility:** interactive UI must use real `<button>` or tabIndex+Enter/Space, AA contrast. Result cards/dropzone were divs — WCAG failure.
+- **Focus management:** modals keep `onCancel` in ref and focus first input, not Cancel — unstable `onCancel` + effect deps caused focus steal on every stats poll (10s/2s). See `AddUserModal.tsx`/`ChangePasswordModal.tsx`; parent callbacks must be `useCallback`.
+- **Auth (multi-user, JWT):**
+  - `METATRACE_JWT_SECRET` ≥32 chars required for login (blank→None, login 500/401). Set in `.env` at repo root (CWD); `Settings` reads `.env` via pydantic-settings. Dev admin seed is `admin`/`changeme` with `must_change_password=true` (403 gate on all non-whitelisted endpoints until changed). Whitelist: `/api/auth/change-password`, `/logout`, `/me`.
+  - Password rule: **≥8 chars, ≥1 upper, ≥1 lower, ≥1 digit** — enforced in `app/models/auth.py` (`_validate_password_strength`, `min_length=8` on Register/UserCreate/ChangePassword/AdminReset) and mirrored in `AddUserModal.tsx`/`ChangePasswordModal.tsx` (`PASSWORD_HINT`). Don't reintroduce 12.
+  - Email is **optional** on create/register; backend synthesizes `"{username}@metatrace.local"` when omitted (keeps `NOT NULL UNIQUE` invariant). Table still has email column; UI no longer shows it. Don't re-add email field.
+  - Roles: `admin`/`editor`/`viewer`. Mutating endpoints use `Depends(require_role("admin"))` or `("admin","editor")` from `app/dependencies.py` — never roll own check. Reads (`/api/search`, `/api/images`, `/api/stats`, `/api/rescan-delta`, `/api/settings/store-snapshot`, `/api/thumb/{id}`, `/api/file/{id}`) gated `require_role("admin","editor","viewer")` (thumb/file allow `?token=` for `<img src>`). Scan: `POST /api/rescan` → `require_role("admin","editor")` + `if rebuild and role!="admin": 403` (editor rescan only, admin full rebuild). `pause`/`resume`/`store-snapshot/run`/`/api/users/*` admin-only. Frontend hides (not disables) buttons per role in `App.tsx` (`canRescan`/`canFullScan`) and `DeltaInfo` `canFullScan` — backend is source of truth.
+  - Rate-limit new admin endpoints via `_check_rate_limit(request, "10/minute")` in router (mirrors `routes.py`/`users.py`); refresh cookie scoped to `path=/api/auth/refresh` — don't broaden. Argon2id hashing; access JWT in `localStorage`, refresh in httpOnly cookie.
 
 ## Toolchain quirks
 
-- `backend/requirements.txt` is **exact-pinned deliberately**. The `torch==X.Y.Z` pin + `--extra-index-url .../whl/cpu` combo depends on PEP 440 local-version ordering so Linux resolves the slim `+cpu` wheel instead of the multi-GB CUDA stack (macOS wheels only exist on PyPI). Don't loosen pins casually; keep `psd-tools >= 1.12.2` (CVE-2026-27809 fix floor).
-- `MODEL_NAME=ViT-B-32-quickgelu`: OpenAI CLIP weights require `-quickgelu` architecture variants. The tag is also hardcoded in the Dockerfile weight-baking step — change both together or containers attempt a runtime download (fails offline).
-- Config lives in `backend/app/config.py` (pydantic-settings, reads `.env` from CWD). Most vars are plain names (`STORE_PATH`, `MAX_UPLOAD_MB`, …); the security-sensitive ones use alias choices `METATRACE_ADMIN_TOKEN` / `METATRACE_CORS_ORIGINS` (unprefixed forms also accepted). CORS middleware attaches only when origins are set — SPA is same-origin by default.
-- **macOS local dev: run `scripts/fix_mac_omp.sh` once per venv.** PyPI faiss-cpu + torch wheels each bundle their own `libomp.dylib`; both loaded = OMP Error #15 abort or silent SIGSEGV at CLIP instantiation or `faiss.search` — device-independent, no traceback. Script relinks faiss onto torch's libomp (idempotent, re-run after either package reinstall). Linux/Docker unaffected (system libgomp).
-- exiftool is optional at runtime: absent → indexing still works, XMP fields stay empty, `/api/stats` flags it.
-- Frontend CSP is strict `style-src 'self'` (no `unsafe-inline`); inline styles removed (score bars use JS-set width, icons use classes). Avoid adding inline styles/scripts.
+- `backend/requirements.txt` **exact-pinned deliberately**. `torch` + `--extra-index-url .../whl/cpu` relies on PEP 440 local-version ordering (Linux gets `+cpu` slim wheel, not CUDA). Don't loosen; keep `psd-tools >=1.12.2` (CVE-2026-27809).
+- `MODEL_NAME=ViT-B-32-quickgelu`: OpenAI CLIP requires `-quickgelu` variant; also hardcoded in Dockerfile weight-bake — change both or container tries runtime download (fails offline).
+- Config in `backend/app/config.py` (pydantic-settings, `.env` from CWD). Most vars plain names (`STORE_PATH`, `MAX_UPLOAD_MB`); security-sensitive use alias choices `METATRACE_ADMIN_TOKEN`/`METATRACE_CORS_ORIGINS`/`METATRACE_JWT_SECRET` (unprefixed also accepted). CORS middleware attaches only when origins set — SPA is same-origin by default. Blank `JWT_SECRET`→`None` (min 32 chars if set).
+- **macOS: run `scripts/fix_mac_omp.sh` once per venv.** faiss-cpu + torch bundle separate `libomp.dylib` → OMP Error #15 or silent SIGSEGV at CLIP/faiss — device-independent. Script relinks faiss onto torch's libomp (idempotent, re-run after reinstall). Linux/Docker unaffected (system libgomp).
+- exiftool optional: absent → XMP empty, `/api/stats` flags it.
+- Frontend CSP is strict `style-src 'self'` (no `unsafe-inline`); score bars use JS-set width, icons use classes. Avoid inline styles/scripts.
+- `.env` at repo root is **gitignored** (`.env.example` is template). Real `STORE_PATH` is `/Users/ralf/Desktop/MetaTrace_Store`, real `DATA_PATH` is `./data` (`data/metatrace.db`, `index.faiss`, `thumbs/`). `/tmp/store` in old examples is throwaway.
+

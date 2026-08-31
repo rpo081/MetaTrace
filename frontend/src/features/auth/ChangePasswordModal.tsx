@@ -11,6 +11,7 @@ interface SelfProps {
   mode: 'self'
   dismissible: boolean
   onCancel?: () => void
+  onSuccess?: () => void
 }
 
 interface AdminProps {
@@ -23,10 +24,10 @@ interface AdminProps {
 
 type Props = SelfProps | AdminProps
 
-const PASSWORD_HINT = '12+ chars, must include upper, lower, and a digit.'
+const PASSWORD_HINT = '8+ chars, must include upper, lower, and a digit.'
 
 function checkPasswordStrength(pw: string): string | null {
-  if (pw.length < 12) return PASSWORD_HINT
+  if (pw.length < 8) return PASSWORD_HINT
   if (!/[A-Z]/.test(pw)) return PASSWORD_HINT
   if (!/[a-z]/.test(pw)) return PASSWORD_HINT
   if (!/[0-9]/.test(pw)) return PASSWORD_HINT
@@ -49,6 +50,10 @@ export function ChangePasswordModal(props: Props) {
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
+  const onCancelRef = useRef(onCancel)
+  useEffect(() => {
+    onCancelRef.current = onCancel
+  }, [onCancel])
 
   // Modal lifecycle: focus management, escape, focus trap, body scroll lock.
   useEffect(() => {
@@ -58,13 +63,18 @@ export function ChangePasswordModal(props: Props) {
 
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    cancelRef.current?.focus()
+    // Only auto-focus cancel when dismissible; otherwise focus first input.
+    if (dismissible) {
+      cancelRef.current?.focus()
+    } else {
+      dialogRef.current?.querySelector<HTMLInputElement>('input:not([disabled])')?.focus()
+    }
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (!dismissible) return
         e.preventDefault()
-        onCancel()
+        onCancelRef.current()
         return
       }
       if (e.key !== 'Tab') return
@@ -92,7 +102,7 @@ export function ChangePasswordModal(props: Props) {
       returnFocusRef.current?.focus()
       returnFocusRef.current = null
     }
-  }, [dismissible, onCancel])
+  }, [dismissible])
 
   const strengthError = next ? checkPasswordStrength(next) : null
   const matchError = confirm && next !== confirm ? 'Passwords do not match.' : null
@@ -111,16 +121,16 @@ export function ChangePasswordModal(props: Props) {
     try {
       if (isSelf) {
         await auth.changePassword(current, next)
+        // Voluntary (dismissible) self-service flow: notify caller and close.
+        // Forced flow (dismissible=false) relies on mustChangePassword flag clearing to unmount.
+        if (props.mode === 'self' && props.onSuccess) {
+          props.onSuccess()
+        } else if (dismissible) {
+          onCancelRef.current()
+        }
       } else if (props.mode === 'admin') {
         await adminResetPassword(props.userId, next)
         props.onDone?.()
-      }
-      // Close: parent (self mode) will unmount via state change in caller.
-      // For admin mode, onDone callback is invoked above.
-      if (isSelf) {
-        // Self mode is mounted by ForceChangePasswordModal which watches the
-        // flag; the flag was already cleared by auth.changePassword above.
-        // No explicit close needed.
       }
       // Reset local form so re-opening (admin mode) starts fresh.
       setCurrent('')
@@ -138,10 +148,10 @@ export function ChangePasswordModal(props: Props) {
   }
 
   const title = isSelf
-    ? 'You must change your password'
+    ? (dismissible ? 'Change password' : 'You must change your password')
     : `Reset password for ${props.mode === 'admin' ? props.username : ''}`
   const banner = isSelf
-    ? 'For security reasons, you must set a new password before continuing.'
+    ? (dismissible ? 'Update your password. Other sessions will be signed out.' : 'For security reasons, you must set a new password before continuing.')
     : 'Admin reset — the user will need to re-login.'
 
   return (
@@ -150,8 +160,8 @@ export function ChangePasswordModal(props: Props) {
       role="presentation"
       onMouseDown={(e) => {
         if (!dismissible) return
-        if (e.target === e.currentTarget) onCancel()
-      }}
+      if (e.target === e.currentTarget) onCancelRef.current()
+        }}
     >
       <div
         ref={dialogRef}

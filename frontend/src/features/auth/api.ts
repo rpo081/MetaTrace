@@ -77,7 +77,7 @@ export interface UserListItem {
 
 export interface UserCreateRequest {
   username: string
-  email: string
+  email?: string
   password: string
   role: Role
 }

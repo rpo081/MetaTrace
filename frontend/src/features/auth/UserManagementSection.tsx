@@ -46,6 +46,14 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
     }
   }, [])
 
+  const handleAddCancel = useCallback(() => setAddOpen(false), [])
+  const handleAddCreated = useCallback(() => {
+    setAddOpen(false)
+    void refresh()
+  }, [refresh])
+  const handleResetCancel = useCallback(() => setResetTarget(null), [])
+  const handleResetDone = useCallback(() => setResetTarget(null), [])
+
   useEffect(() => {
     void refresh()
   }, [refresh])
@@ -136,7 +144,6 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
             <thead>
               <tr>
                 <th scope="col">Username</th>
-                <th scope="col">Email</th>
                 <th scope="col">Role</th>
                 <th scope="col">Active</th>
                 <th scope="col">Last login</th>
@@ -159,7 +166,6 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
                         <span className="user-mgmt-self-badge">you</span>
                       )}
                     </td>
-                    <td className="mono">{u.email}</td>
                     <td>
                       <select
                         className="text-input user-mgmt-role-select"
@@ -233,11 +239,8 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
 
       <AddUserModal
         open={addOpen}
-        onCancel={() => setAddOpen(false)}
-        onCreated={() => {
-          setAddOpen(false)
-          void refresh()
-        }}
+        onCancel={handleAddCancel}
+        onCreated={handleAddCreated}
       />
 
       {resetTarget && (
@@ -245,8 +248,8 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
           mode="admin"
           userId={resetTarget.id}
           username={resetTarget.username}
-          onCancel={() => setResetTarget(null)}
-          onDone={() => setResetTarget(null)}
+          onCancel={handleResetCancel}
+          onDone={handleResetDone}
         />
       )}
     </section>

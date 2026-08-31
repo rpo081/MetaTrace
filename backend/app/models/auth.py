@@ -33,12 +33,11 @@ class UserListItem(BaseModel):
 # ---------------------------------------------------------------------------
 # Password complexity (P1 hardening — A-3)
 # ---------------------------------------------------------------------------
-# Length raised to 12 per audit (A-3); validator now requires 3 of 4 classes
-# (upper, lower, digit) to block trivial Password1-style passwords. Argon2id
-# remains the real defence — this just raises the floor.
+# Length 8 per operator request; validator requires upper, lower, digit
+# to block trivial passwords. Argon2id remains the real defence.
 
 _PASSWORD_COMPLEXITY_MSG = (
-    "password must be at least 12 characters and contain uppercase, lowercase and digit"
+    "password must be at least 8 characters and contain uppercase, lowercase and digit"
 )
 _UPPER_RE = re.compile(r"[A-Z]")
 _LOWER_RE = re.compile(r"[a-z]")
@@ -46,7 +45,7 @@ _DIGIT_RE = re.compile(r"[0-9]")
 
 
 def _validate_password_strength(value: str) -> str:
-    if len(value) < 12:
+    if len(value) < 8:
         raise ValueError(_PASSWORD_COMPLEXITY_MSG)
     if not (_UPPER_RE.search(value) and _LOWER_RE.search(value) and _DIGIT_RE.search(value)):
         raise ValueError(_PASSWORD_COMPLEXITY_MSG)
@@ -59,8 +58,8 @@ def _validate_password_strength(value: str) -> str:
 
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
-    email: EmailStr
-    password: str = Field(..., min_length=12, max_length=128)
+    email: EmailStr | None = Field(default=None)
+    password: str = Field(..., min_length=8, max_length=128)
     role: str = Field(default="viewer", pattern=r"^(admin|editor|viewer)$")
 
     @field_validator("password")
@@ -82,7 +81,7 @@ class LoginResponse(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(..., min_length=12, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
 
     @field_validator("new_password")
     @classmethod
@@ -101,8 +100,8 @@ class MeResponse(BaseModel):
 
 class UserCreateRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
-    email: EmailStr
-    password: str = Field(..., min_length=12, max_length=128)
+    email: EmailStr | None = Field(default=None)
+    password: str = Field(..., min_length=8, max_length=128)
     role: str = Field(default="viewer", pattern=r"^(admin|editor|viewer)$")
 
     @field_validator("password")
@@ -118,7 +117,7 @@ class UserUpdateRequest(BaseModel):
 
 
 class AdminResetPasswordRequest(BaseModel):
-    new_password: str = Field(..., min_length=12, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
 
     @field_validator("new_password")
     @classmethod

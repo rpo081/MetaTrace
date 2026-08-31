@@ -9,24 +9,19 @@ interface Props {
   onCreated: (user: UserListItem) => void
 }
 
-const PASSWORD_HINT = '12+ chars, must include upper, lower, and a digit.'
+const PASSWORD_HINT = '8+ chars, must include upper, lower, and a digit.'
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const USERNAME_RE = /^[a-zA-Z0-9_-]+$/
 
 function validateField(values: {
   username: string
-  email: string
   password: string
 }): Partial<Record<keyof UserCreateRequest, string>> {
   const errors: Partial<Record<keyof UserCreateRequest, string>> = {}
   if (!USERNAME_RE.test(values.username) || values.username.length < 3 || values.username.length > 64) {
     errors.username = '3–64 chars, letters / digits / _- only.'
   }
-  if (!EMAIL_RE.test(values.email)) {
-    errors.email = 'Enter a valid email address.'
-  }
-  if (values.password.length < 12) {
+  if (values.password.length < 8) {
     errors.password = PASSWORD_HINT
   } else if (!/[A-Z]/.test(values.password)) {
     errors.password = PASSWORD_HINT
@@ -40,7 +35,6 @@ function validateField(values: {
 
 export function AddUserModal({ open, onCancel, onCreated }: Props) {
   const [username, setUsername] = useState('')
-  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState<Role>('viewer')
   const [submitting, setSubmitting] = useState(false)
@@ -49,7 +43,13 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
 
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const usernameRef = useRef<HTMLInputElement | null>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
+  const onCancelRef = useRef(onCancel)
+  // Keep latest onCancel without re-triggering the effect.
+  useEffect(() => {
+    onCancelRef.current = onCancel
+  }, [onCancel])
 
   useEffect(() => {
     if (!open) return
@@ -59,12 +59,13 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
 
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    cancelRef.current?.focus()
+    // Focus first input, not Cancel — avoids stealing focus on re-render.
+    usernameRef.current?.focus()
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
-        onCancel()
+        onCancelRef.current()
         return
       }
       if (e.key !== 'Tab') return
@@ -90,13 +91,12 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
       returnFocusRef.current?.focus()
       returnFocusRef.current = null
     }
-  }, [open, onCancel])
+  }, [open])
 
   if (!open) return null
 
   function reset() {
     setUsername('')
-    setEmail('')
     setPassword('')
     setRole('viewer')
     setErrors({})
@@ -105,14 +105,14 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
-    const fieldErrors = validateField({ username, email, password })
+    const fieldErrors = validateField({ username, password })
     setErrors(fieldErrors)
     if (Object.keys(fieldErrors).length > 0) return
 
     setSubmitting(true)
     setTopError(null)
     try {
-      const user = await createUser({ username, email, password, role })
+      const user = await createUser({ username, password, role })
       onCreated(user)
       reset()
     } catch (err) {
@@ -121,9 +121,7 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
           setTopError(
             err.message.includes('username')
               ? 'Username is already taken.'
-              : err.message.includes('email')
-                ? 'Email is already registered.'
-                : err.message,
+              : err.message,
           )
         } else if (err.status === 429) {
           setTopError('Too many requests. Please wait a moment.')
@@ -143,7 +141,7 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
       className="modal-backdrop"
       role="presentation"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCancel()
+        if (e.target === e.currentTarget) onCancelRef.current()
       }}
     >
       <div
@@ -161,6 +159,7 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
             <span className="field-label">Username</span>
             <input
               id="add-username"
+              ref={usernameRef}
               type="text"
               className="text-input"
               value={username}
@@ -170,22 +169,6 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
             />
             {errors.username && (
               <span className="error-box login-helper" role="alert">{errors.username}</span>
-            )}
-          </label>
-
-          <label className="field" htmlFor="add-email">
-            <span className="field-label">Email</span>
-            <input
-              id="add-email"
-              type="email"
-              className="text-input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              disabled={submitting}
-              autoComplete="off"
-            />
-            {errors.email && (
-              <span className="error-box login-helper" role="alert">{errors.email}</span>
             )}
           </label>
 
@@ -240,7 +223,7 @@ export function AddUserModal({ open, onCancel, onCreated }: Props) {
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={submitting || !username || !email || !password}
+              disabled={submitting || !username || !password}
             >
               {submitting ? 'Creating…' : 'Create user'}
             </button>

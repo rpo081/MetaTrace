@@ -18,6 +18,7 @@ import { SearchIcon, GridIcon, GearIcon, CloseIcon, SortAscIcon, SortDescIcon, L
 import { AuthProvider, useAuth } from './features/auth/AuthContext'
 import { RequireAuth } from './features/auth/RequireAuth'
 import { ForceChangePasswordModal } from './features/auth/ForceChangePasswordModal'
+import { ChangePasswordModal } from './features/auth/ChangePasswordModal'
 import { UserManagementSection } from './features/auth/UserManagementSection'
 import type {
   AppPage,
@@ -207,12 +208,14 @@ function DeltaInfo({
   onOpenFullRescan,
   loading,
   title = 'Changes since last scan:',
+  canFullScan = true,
 }: {
   delta: RescanDeltaResponse | null
   onRescanWithDelta: () => void
   onOpenFullRescan: () => void
   loading: boolean
   title?: string
+  canFullScan?: boolean
 }) {
   if (!delta || delta.status === 'no_delta') {
     return null
@@ -244,14 +247,16 @@ function DeltaInfo({
         >
           Rescan ({totalChanges})
         </button>
-        <button
-          className="btn btn-sm btn-danger-soft"
-          onClick={onOpenFullRescan}
-          disabled={loading}
-          title="Reset indexed data and start a full scan"
-        >
-          Reset + full scan
-        </button>
+        {canFullScan && (
+          <button
+            className="btn btn-sm btn-danger-soft"
+            onClick={onOpenFullRescan}
+            disabled={loading}
+            title="Reset indexed data and start a full scan"
+          >
+            Reset + full scan
+          </button>
+        )}
       </div>
     </div>
   )
@@ -288,6 +293,12 @@ function AppContent() {
   const [showFullRescanModal, setShowFullRescanModal] = useState(false)
   const [fullRescanConfirmed, setFullRescanConfirmed] = useState(false)
   const [fullRescanNoticeActive, setFullRescanNoticeActive] = useState(false)
+  const [showPw, setShowPw] = useState(false)
+
+  const role = state.user?.role
+  const canRescan = role === 'admin' || role === 'editor'
+  const canFullScan = role === 'admin'
+  const canSeeDelta = canRescan
 
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     try {
@@ -915,41 +926,57 @@ function AppContent() {
               <h2>Library Maintenance</h2>
               <p className="muted">Manage indexing and rebuild operations for the local image library.</p>
             </div>
-            {delta?.status === 'ok' && delta.summary ? (
-              <DeltaInfo
-                delta={delta}
-                onRescanWithDelta={() => rescan(false, true)}
-                onOpenFullRescan={openFullRescanModal}
-                loading={scanActive}
-                title="Pending changes"
-              />
+            {canSeeDelta ? (
+              delta?.status === 'ok' && delta.summary ? (
+                <DeltaInfo
+                  delta={delta}
+                  onRescanWithDelta={() => rescan(false, true)}
+                  onOpenFullRescan={openFullRescanModal}
+                  loading={scanActive}
+                  title="Pending changes"
+                  canFullScan={canFullScan}
+                />
+              ) : (
+                <div className="delta-info" role="status">
+                  <div className="delta-info-title">Pending changes</div>
+                  <div className="muted">No change summary is currently available.</div>
+                </div>
+              )
             ) : (
               <div className="delta-info" role="status">
                 <div className="delta-info-title">Pending changes</div>
-                <div className="muted">No change summary is currently available.</div>
+                <div className="muted">Library updates are managed by editors and admins.</div>
               </div>
             )}
-            <div className="scan-actions maintenance-actions">
-              <button
-                className="btn"
-                onClick={() => rescan(false, true)}
-                disabled={scanActive}
-                title={scanActive ? 'A scan is already running' : 'Scan changed files when delta data is available'}
-              >
-                Rescan changes
-              </button>
-              <button
-                className="btn btn-danger-soft"
-                onClick={openFullRescanModal}
-                disabled={scanActive}
-                title="Reset indexed data and start a full scan"
-              >
-                Reset + full scan
-              </button>
-            </div>
-            <div className="maintenance-note muted">
-              Full scan replaces existing indexed data and may temporarily reduce search and browse completeness.
-            </div>
+            {canSeeDelta && (
+              <div className="scan-actions maintenance-actions">
+                {canRescan && (
+                  <button
+                    className="btn"
+                    onClick={() => rescan(false, true)}
+                    disabled={scanActive}
+                    title={scanActive ? 'A scan is already running' : 'Scan changed files when delta data is available'}
+                  >
+                    Rescan changes
+                  </button>
+                )}
+                {canFullScan && (
+                  <button
+                    className="btn btn-danger-soft"
+                    onClick={openFullRescanModal}
+                    disabled={scanActive}
+                    title="Reset indexed data and start a full scan"
+                  >
+                    Reset + full scan
+                  </button>
+                )}
+              </div>
+            )}
+            {canSeeDelta && (
+              <div className="maintenance-note muted">
+                Full scan replaces existing indexed data and may temporarily reduce search and browse completeness.
+              </div>
+            )}
           </section>
 
           <section className="settings-card">
@@ -977,10 +1004,34 @@ function AppContent() {
             )}
           </section>
 
+          <section className="settings-card">
+            <div className="settings-header">
+              <h2>Account</h2>
+              <p className="muted">Password &amp; Security</p>
+            </div>
+            <div className="settings-result">
+              <div className="muted">Signed in as {state.user?.username} — {state.user?.role}</div>
+              <button type="button" className="btn" onClick={() => setShowPw(true)}>
+                Change password
+              </button>
+            </div>
+          </section>
+
           {state.user?.role === 'admin' && (
             <UserManagementSection currentUserId={state.user.id} />
           )}
         </div>
+        {showPw && (
+          <ChangePasswordModal
+            mode="self"
+            dismissible={true}
+            onCancel={() => setShowPw(false)}
+            onSuccess={() => {
+              setShowPw(false)
+              setNotice('Password updated. Other sessions were signed out.')
+            }}
+          />
+        )}
       </main>
       )}
       <ForceChangePasswordModal />

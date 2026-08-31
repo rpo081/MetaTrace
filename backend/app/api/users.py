@@ -89,14 +89,15 @@ async def create_user(
 
     if db.get_user_by_username(db_path, body.username):
         raise HTTPException(409, "username already taken")
-    if db.get_user_by_email(db_path, body.email):
+    email = body.email if body.email is not None else f"{body.username}@metatrace.local"
+    if db.get_user_by_email(db_path, email):
         raise HTTPException(409, "email already registered")
 
     pw_hash = hash_password(body.password)
     user_id = db.create_user(
         db_path,
         username=body.username,
-        email=body.email,
+        email=email,
         password_hash=pw_hash,
         role=body.role,
     )
