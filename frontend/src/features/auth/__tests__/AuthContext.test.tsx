@@ -83,6 +83,11 @@ describe('AuthContext', () => {
   it('login_writes_token_and_calls_me', async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString()
+      if (url.endsWith('/api/auth/refresh')) {
+        // No refresh cookie — boot's silent refresh resolves to "no session",
+        // so login can proceed.
+        return mockJsonResponse({ detail: 'no refresh cookie' }, { status: 401, ok: false })
+      }
       if (url.endsWith('/api/auth/login')) {
         return mockJsonResponse({
           access_token: 'fresh-token',
@@ -166,6 +171,23 @@ describe('AuthContext', () => {
 
     expect(statsCalls).toBeGreaterThanOrEqual(2)
     expect(getAccessToken()).toBe('rotated-token')
+  })
+
+  it('boot_with_transient_refresh_failure_stays_loading', async () => {
+    // A 5xx from /api/auth/refresh is transient — boot must NOT log the user
+    // out (F4). It stays `loading` so loadingTooLong surfaces the Retry button.
+    fetchMock.mockResolvedValue(
+      mockJsonResponse({ detail: 'boom' }, { status: 500, ok: false }),
+    )
+
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything())
+    })
+    await act(async () => {})
+    expect(result.current.state.status).toBe('loading')
+    expect(result.current.state.user).toBeNull()
   })
 
   it('logout_clears_state_and_token', async () => {

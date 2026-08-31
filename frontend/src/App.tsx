@@ -31,9 +31,9 @@ export default function App() {
 }
 
 function AppContent() {
-  const { state } = useAuth()
+  const { state, logout } = useAuth()
   const [page, setPage] = useState<AppPage>('search')
-  const { stats, delta, statsError, refreshStats } = useStatsPolling()
+  const { stats, delta, statsErrorKind, refreshStats } = useStatsPolling()
 
   const role = state.user?.role
   const canRescan = role === 'admin' || role === 'editor'
@@ -135,6 +135,13 @@ function AppContent() {
     [refreshStats],
   )
 
+  // When polling determines the refresh cookie is also gone, the topbar
+  // shows "Session expired" with a "Sign in" button that triggers logout —
+  // useAuth flips to `unauthenticated` and RequireAuth re-renders LoginPage.
+  const onSessionExpired = useCallback(() => {
+    void logout()
+  }, [logout])
+
   const fullRescanController = useMemo(
     () => ({
       open: showFullRescanModal,
@@ -189,7 +196,7 @@ function AppContent() {
   return (
     <PageShell
       stats={stats}
-      statsError={statsError}
+      statsErrorKind={statsErrorKind}
       scanActive={scanActive}
       scanning={scanning}
       paused={paused}
@@ -199,6 +206,7 @@ function AppContent() {
       controlScan={controlScan}
       fullRescan={fullRescanController}
       fullRescanNoticeActive={fullRescanNoticeActive}
+      onSessionExpired={onSessionExpired}
     >
       {renderPage()}
       <ForceChangePasswordModal />

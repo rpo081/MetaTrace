@@ -110,8 +110,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           bootWithToken(newToken)
         })
         .catch(() => {
+          // Transient refresh failure (network, 429, 5xx) — the session may
+          // still be valid; stay `loading` and let loadingTooLong surface the
+          // Retry button instead of force-logging the user out.
           if (cancelled) return
-          setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
         })
     }
     return () => {

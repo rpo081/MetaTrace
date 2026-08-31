@@ -165,7 +165,7 @@ def stats(
     s: Settings = Depends(get_settings),
     user=Depends(require_role("admin", "editor", "viewer")),
 ) -> dict:
-    _check_rate_limit(request, "30/minute")
+    _check_rate_limit(request, "30/minute", per_endpoint=True)
     response.headers["Cache-Control"] = "private, no-store, max-age=0"
     st = request.app.state
     snap_age, snap_stale = _snapshot_age_sec(s)
@@ -492,7 +492,7 @@ def get_rescan_delta(
         - status='ok': delta available with timestamp, summary, and changes
         - status='no_delta': no delta available (full rescan required)
     """
-    _check_rate_limit(request, "30/minute")
+    _check_rate_limit(request, "30/minute", per_endpoint=True)
     delta_file = s.data_path / "rescan_delta_latest.json"
 
     if not delta_file.exists():

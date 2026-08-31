@@ -88,7 +88,13 @@ export async function refreshAccessToken(): Promise<string | null> {
     if (data.access_token) setAccessToken(data.access_token)
     return data.access_token ?? null
   }
-  return null
+  // Definitive rejection (401/403): the refresh cookie is gone/revoked —
+  // no session to restore. Callers treat `null` as "log out".
+  if (res.status === 401 || res.status === 403) return null
+  // Transient failure (429 rate-limit, 5xx server error): the session may
+  // still be valid — throw instead of returning null so callers retry on the
+  // same session rather than force-logging the user out.
+  throw await throwApiError(res)
 }
 
 export async function fetchMe(): Promise<MeResponse> {

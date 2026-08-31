@@ -11,6 +11,7 @@ import type { AppPage, Stats } from '../types'
 import { SearchIcon, GridIcon, GearIcon, LogoutIcon } from './Icon'
 import ScanReportLine, { getReportRates } from './ScanReportLine'
 import { useAuth } from '../features/auth/AuthContext'
+import type { StatsErrorKind } from '../hooks/useStatsPolling'
 
 function fmtRate(val: number | undefined): string {
   if (val == null || val <= 0) return '0'
@@ -113,7 +114,7 @@ export interface FullRescanModalController {
 
 interface Props {
   stats: Stats | null
-  statsError: boolean
+  statsErrorKind: StatsErrorKind | null
   scanActive: boolean
   scanning: boolean
   paused: boolean
@@ -123,12 +124,14 @@ interface Props {
   controlScan: (action: 'pause' | 'resume') => Promise<void>
   fullRescan: FullRescanModalController
   fullRescanNoticeActive: boolean
+  /** Triggered when the topbar shows "Session expired" — typically calls useAuth().logout(). */
+  onSessionExpired: () => void
   children: ReactNode
 }
 
 export default function PageShell({
   stats,
-  statsError,
+  statsErrorKind,
   scanActive,
   scanning,
   paused,
@@ -138,6 +141,7 @@ export default function PageShell({
   controlScan,
   fullRescan,
   fullRescanNoticeActive,
+  onSessionExpired,
   children,
 }: Props) {
   const { state, logout } = useAuth()
@@ -244,15 +248,37 @@ export default function PageShell({
                 )}
               </>
             ) : (
-              statsError ? (
+              statsErrorKind === 'network' ? (
                 <span className="muted">
                   Cannot reach server
                   <button
                     className="btn btn-sm"
-                    onClick={refreshStats}
+                    onClick={() => refreshStats()}
                     aria-label="Retry server connection"
                   >
                     Retry
+                  </button>
+                </span>
+              ) : statsErrorKind === 'server' ? (
+                <span className="muted">
+                  Server temporarily unavailable
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => refreshStats()}
+                    aria-label="Retry request"
+                  >
+                    Retry
+                  </button>
+                </span>
+              ) : statsErrorKind === 'auth' ? (
+                <span className="muted">
+                  Session expired
+                  <button
+                    className="btn btn-sm"
+                    onClick={onSessionExpired}
+                    aria-label="Sign in again"
+                  >
+                    Sign in
                   </button>
                 </span>
               ) : null
