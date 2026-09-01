@@ -50,6 +50,7 @@ def app(tmp_path, monkeypatch):
         jwt_secret="test-jwt-secret-32-chars-minimum-length!!",
         admin_token=None,
         allow_unauthenticated=True,
+        cookie_secure=True,
     )
     Indexer(settings).incremental(trigger="seed")
     _app = create_app(settings)
@@ -91,6 +92,7 @@ def client_cors(tmp_path, monkeypatch):
         admin_token=None,
         allow_unauthenticated=True,
         cors_origins="http://localhost:5173",
+        cookie_secure=True,
     )
     Indexer(settings).incremental(trigger="seed")
     with TestClient(create_app(settings)) as c:
@@ -117,6 +119,7 @@ def app_admin(tmp_path, monkeypatch):
         batch_size=8,
         jwt_secret="test-jwt-secret-32-chars-minimum-length!!",
         admin_token="admintoken1234567890123456789012",
+        cookie_secure=True,
     )
     Indexer(settings).incremental(trigger="seed")
     _app = create_app(settings)

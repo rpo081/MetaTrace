@@ -182,11 +182,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "(trusted-LAN mode). Set METATRACE_ADMIN_TOKEN to require authentication."
             )
 
-        if not settings.cookie_secure and not settings.allow_unauthenticated:
+        if settings.cookie_secure is None:
+            if settings.trusted_proxy:
+                log.info(
+                    "METATRACE_COOKIE_SECURE=auto — Secure flag follows request scheme "
+                    "(https→Secure, http→not); METATRACE_TRUSTED_PROXY=true so "
+                    "X-Forwarded-Proto/Forwarded proto=https is honoured"
+                )
+            else:
+                log.info(
+                    "METATRACE_COOKIE_SECURE=auto (default) — Secure flag follows request "
+                    "scheme (https→Secure, http→not); set true/false to force"
+                )
+        elif not settings.cookie_secure and not settings.allow_unauthenticated:
             log.warning(
-                "METATRACE_COOKIE_SECURE is false — auth cookies will be sent over "
+                "METATRACE_COOKIE_SECURE is explicitly false — auth cookies will be sent over "
                 "plaintext HTTP and are vulnerable to network interception. Use only "
-                "for local HTTP development; set METATRACE_COOKIE_SECURE=true (default) "
+                "for local HTTP development; set METATRACE_COOKIE_SECURE=true or auto "
                 "for any internet-facing deployment."
             )
 

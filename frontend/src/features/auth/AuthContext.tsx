@@ -162,26 +162,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async (): Promise<string | null> => {
     if (inflightRefresh.current) return inflightRefresh.current
     const p = (async () => {
-      try {
-        const t = await refreshAccessToken()
-        if (t) setAccessToken(t)
-        return t
-      } finally {
-        // No-op: cleanup happens in inflightRefresh.finally below.
-      }
+      const t = await refreshAccessToken()
+      if (t) setAccessToken(t)
+      return t
     })()
     inflightRefresh.current = p
+    // Register synchronously before any await so concurrent 401s see the slot
+    // and wait instead of issuing a second POST (stampede → reuse revoke).
     setPendingRefresh(p)
-    p.finally(() => {
+    try {
+      const token = await p
+      if (!token) {
+        setAccessToken(null)
+        setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
+      }
+      return token
+    } finally {
       inflightRefresh.current = null
       setPendingRefresh(null)
-    })
-    const token = await p
-    if (!token) {
-      setAccessToken(null)
-      setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
     }
-    return token
   }, [])
 
   const changePassword = useCallback(async (current: string, next: string) => {

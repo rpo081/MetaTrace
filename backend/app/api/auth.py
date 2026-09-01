@@ -148,49 +148,88 @@ def _is_same_origin(request: Request) -> bool:
     return origin_port in (None, 80, 443) and request_port in (None, 80, 443)
 
 
-def _set_refresh_cookie(response: Response, token: str, settings: Settings) -> None:
+def _is_https_request(request: Request) -> bool:
+    """Return True when the original client request was https.
+
+    Checks ``request.url.scheme`` first; when ``METATRACE_TRUSTED_PROXY`` is
+    true the first value of ``X-Forwarded-Proto`` (comma-split) and the
+    ``Forwarded`` header's ``proto`` parameter are also honoured.
+    """
+    if request.url.scheme == "https":
+        return True
+    settings = _settings(request)
+    if not settings.trusted_proxy:
+        return False
+    xfp = request.headers.get("x-forwarded-proto", "")
+    if xfp:
+        first = xfp.split(",")[0].strip().lower()
+        if first == "https":
+            return True
+    fwd = request.headers.get("forwarded", "")
+    if fwd:
+        # Forwarded may contain multiple comma-separated entries and each entry
+        # is semicolon-separated key=value pairs.
+        for entry in fwd.split(","):
+            for param in entry.split(";"):
+                param = param.strip()
+                if param.lower().startswith("proto="):
+                    val = param.split("=", 1)[1].strip().strip('"').strip("'").lower()
+                    if val == "https":
+                        return True
+    return False
+
+
+def _effective_secure(request: Request) -> bool:
+    """Resolve tri-state ``cookie_secure`` to a concrete bool per request."""
+    settings = _settings(request)
+    if settings.cookie_secure is None:
+        return _is_https_request(request)
+    return bool(settings.cookie_secure)
+
+
+def _set_refresh_cookie(response: Response, token: str, settings: Settings, request: Request) -> None:
     response.set_cookie(
         key=_refresh_cookie_name(),
         value=token,
         httponly=True,
-        secure=settings.cookie_secure,
+        secure=_effective_secure(request),
         samesite=settings.cookie_same_site,
         max_age=settings.refresh_token_ttl_days * 86400,
         path=REFRESH_COOKIE_PATH,
     )
 
 
-def _clear_refresh_cookie(response: Response, settings: Settings) -> None:
+def _clear_refresh_cookie(response: Response, settings: Settings, request: Request) -> None:
     response.delete_cookie(
         key=_refresh_cookie_name(),
         httponly=True,
-        secure=settings.cookie_secure,
+        secure=_effective_secure(request),
         samesite=settings.cookie_same_site,
         path=REFRESH_COOKIE_PATH,
     )
 
 
-def _access_cookie_name(settings: Settings) -> str:
-    return "__Host-metatrace_access" if settings.cookie_secure else "metatrace_access"
+def _access_cookie_name(request: Request) -> str:
+    return "__Host-metatrace_access" if _effective_secure(request) else "metatrace_access"
 
 
-def _set_access_cookie(response: Response, token: str, settings: Settings) -> None:
+def _set_access_cookie(response: Response, token: str, settings: Settings, request: Request) -> None:
     response.set_cookie(
-        key=_access_cookie_name(settings),
+        key=_access_cookie_name(request),
         value=token,
         httponly=True,
-        secure=settings.cookie_secure,
+        secure=_effective_secure(request),
         samesite="strict",
         max_age=settings.access_token_ttl_minutes * 60,
         path="/",
     )
 
 
-def _clear_access_cookie(response: Response, settings: Settings) -> None:
+def _clear_access_cookie(response: Response, settings: Settings, request: Request) -> None:
     response.delete_cookie(
-        key=_access_cookie_name(settings),
+        key=_access_cookie_name(request),
         httponly=True,
-        secure=settings.cookie_secure,
+        secure=_effective_secure(request),
         samesite="strict",
         path="/",
     )
@@ -305,8 +344,8 @@ async def login(request: Request, body: LoginRequest, response: Response):
         ttl_days=settings.refresh_token_ttl_days,
     )
 
-    _set_refresh_cookie(response, refresh_raw, settings)
-    _set_access_cookie(response, access_token, settings)
+    _set_refresh_cookie(response, refresh_raw, settings, request)
+    _set_access_cookie(response, access_token, settings, request)
     response.headers["Cache-Control"] = "no-store, max-age=0"
 
     audit(db_path, user_id=row["id"], action="login",
@@ -336,8 +375,8 @@ async def logout(
     if refresh_token:
         revoke_refresh_token(db_path, refresh_token)
 
-    _clear_refresh_cookie(response, settings)
-    _clear_access_cookie(response, settings)
+    _clear_refresh_cookie(response, settings, request)
+    _clear_access_cookie(response, settings, request)
 
     audit(db_path, user_id=user["id"], action="logout",
           ip_address=request.client.host if request.client else None,
@@ -361,9 +400,11 @@ async def refresh(
     # The 403/401 error responses carry the no-store header (NEW-3); the 429
     # path from the rate limiter is intentionally left unchanged.
     if not _is_same_origin(request):
+        log.warning("refresh failed: cross_origin ip=%s origin=%s", request.client.host if request.client else None, request.headers.get("origin"))
         raise _refresh_error(403, "cross-origin refresh denied")
     _check_rate_limit(request, "5/minute", per_endpoint=True)
     if not refresh_token:
+        log.warning("refresh failed: no_cookie ip=%s", request.client.host if request.client else None)
         raise _refresh_error(401, _REFRESH_UNAUTHORIZED)
 
     settings = _settings(request)
@@ -376,7 +417,14 @@ async def refresh(
             ua=request.headers.get("user-agent"),
             ttl_days=settings.refresh_token_ttl_days,
         )
-    except ValueError:
+    except ValueError as exc:
+        msg = str(exc).lower()
+        if "expired" in msg:
+            log.warning("refresh failed: expired ip=%s", request.client.host if request.client else None)
+        elif "revoked" in msg or "reuse" in msg:
+            log.warning("refresh failed: reuse ip=%s", request.client.host if request.client else None)
+        else:
+            log.warning("refresh failed: invalid_token ip=%s reason=%s", request.client.host if request.client else None, msg)
         raise _refresh_error(401, _REFRESH_UNAUTHORIZED) from None
 
     # We need the user to issue a new access token
@@ -387,6 +435,7 @@ async def refresh(
 
     user_row = db.get_user_by_id(db_path, new_row["user_id"])
     if user_row is None or not user_row["is_active"]:
+        log.warning("refresh failed: user_disabled user_id=%s ip=%s", new_row["user_id"] if new_row else None, request.client.host if request.client else None)
         raise _refresh_error(401, _REFRESH_UNAUTHORIZED)
 
     access_token = create_access_token(
@@ -395,8 +444,8 @@ async def refresh(
         ttl_minutes=settings.access_token_ttl_minutes,
     )
 
-    _set_refresh_cookie(response, new_raw, settings)
-    _set_access_cookie(response, access_token, settings)
+    _set_refresh_cookie(response, new_raw, settings, request)
+    _set_access_cookie(response, access_token, settings, request)
     response.headers["Cache-Control"] = "no-store, max-age=0"
 
     return {"access_token": access_token, "token_type": "bearer"}

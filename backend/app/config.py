@@ -95,8 +95,36 @@ class Settings(BaseSettings):
     refresh_token_ttl_days: int = 7
     max_failed_attempts: int = 5
     lockout_duration_minutes: int = 15
-    cookie_secure: bool = True
+    cookie_secure: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("METATRACE_COOKIE_SECURE", "COOKIE_SECURE"),
+        description="Cookie Secure flag: None=auto (https→Secure, http→not), true/false explicit override.",
+    )
     cookie_same_site: str = "lax"
+
+    @field_validator("cookie_secure", mode="before")
+    @classmethod
+    def _cookie_secure_coerce(cls, value: object) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and not isinstance(value, bool):
+            return bool(value)
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("", "auto", "none", "null"):
+                return None
+            if s in ("true", "1", "yes", "on"):
+                return True
+            if s in ("false", "0", "no", "off"):
+                return False
+            raise ValueError(
+                f"invalid METATRACE_COOKIE_SECURE value {value!r}: expected auto, true, or false"
+            )
+        raise ValueError(
+            f"invalid METATRACE_COOKIE_SECURE value {value!r}: expected auto, true, or false"
+        )
 
     @field_validator("jwt_secret", mode="before")
     @classmethod

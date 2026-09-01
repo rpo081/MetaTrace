@@ -277,7 +277,7 @@ Environment variables (or `.env`, see `.env.example`):
 | `THUMBS_MAX_FILES` / `METATRACE_THUMBS_MAX_FILES` | `100000` | max thumbnails before LRU eviction (`0`=unbounded); 100k ≈5 GB at 256 px |
 | `SNAPSHOT_MAX_AGE_HOURS` / `METATRACE_SNAPSHOT_MAX_AGE_HOURS` | `24` | store snapshot staleness threshold (`0`=never stale); stale triggers filesystem walk |
 | `MAX_BROWSE_LIMIT` | `200` | max `limit` for `GET /api/images` (capped on server) |
-| `METATRACE_COOKIE_SECURE` | `true` | set the `Secure` flag on auth cookies. Set to `false` for local HTTP dev only |
+| `METATRACE_COOKIE_SECURE` | `auto` | `Secure` flag on auth cookies: `auto`= `https`→Secure, `http`→not (default, works for local dev); `true`/`false` to force. When `METATRACE_TRUSTED_PROXY=true`, `X-Forwarded-Proto`/`Forwarded` `proto=https` is honoured so TLS-terminating proxies still get Secure |
 | `METATRACE_COOKIE_SAMESITE` | `lax` | SameSite attribute for auth cookies; `lax` blocks cross-site POSTs (recommended) |
 | `METATRACE_REFRESH_TOKEN_TTL_DAYS` | `7` | refresh-token lifetime in days |
 | `METATRACE_ACCESS_TOKEN_TTL_MINUTES` | `15` | access-token lifetime in minutes |

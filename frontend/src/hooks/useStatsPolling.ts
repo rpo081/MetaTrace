@@ -84,18 +84,59 @@ export function useStatsPolling() {
     if (inFlightRef.current) return
     inFlightRef.current = true
 
-    withAuthRetry(() => withTimeout(getStats, STATS_TIMEOUT_MS, 'Cannot reach server. Please retry.'))
-      .then((s) => {
-        setStats(s)
-        setStatsErrorKind(null)
-        clearBackoff()
+    // Single withAuthRetry wrapping both stats+delta ensures only ONE
+    // POST /api/auth/refresh on 401, avoiding stampede reuse (family revoke).
+    // Delta failure is silent — stats drives banner/backoff.
+    // Propagate 401 from either call so withAuthRetry can trigger a single
+    // refresh + retry; non-401 delta errors stay silent.
+    withAuthRetry(async () => {
+      const results = await Promise.allSettled([
+        withTimeout(getStats, STATS_TIMEOUT_MS, 'Cannot reach server. Please retry.'),
+        withTimeout(getRescanDelta, STATS_TIMEOUT_MS, 'Failed to load scan changes.'),
+      ])
+      for (const r of results) {
+        if (r.status === 'rejected' && r.reason instanceof ApiError && r.reason.status === 401) {
+          throw r.reason
+        }
+      }
+      return results
+    })
+      .then((results) => {
+        const [statsResult, deltaResult] = results as [
+          PromiseSettledResult<Stats>,
+          PromiseSettledResult<RescanDeltaResponse>,
+        ]
+        if (statsResult.status === 'fulfilled') {
+          setStats(statsResult.value)
+          setStatsErrorKind(null)
+          clearBackoff()
+        } else {
+          const kind = classifyStatsError(statsResult.reason)
+          setStatsErrorKind(kind)
+          // Auto-retry only genuine outages (offline/timeout). Auth failures
+          // need a user gesture (logout), and server/rate-limit errors must not
+          // be hammered faster than the interval cadence.
+          if (kind === 'network') {
+            if (backoffTimerRef.current != null) return
+            const nextIdx = backoffIdxRef.current + 1
+            if (nextIdx >= NETWORK_BACKOFF_MS.length) return
+            backoffIdxRef.current = nextIdx
+            backoffTimerRef.current = window.setTimeout(() => {
+              backoffTimerRef.current = null
+              refreshStats()
+            }, NETWORK_BACKOFF_MS[nextIdx])
+          }
+        }
+        if (deltaResult.status === 'fulfilled') {
+          setDelta(deltaResult.value)
+        } else {
+          // delta failure silent — keep previous delta, do not affect stats banner
+        }
       })
       .catch((err: unknown) => {
+        // withAuthRetry exhausted (refresh failed) — final 401 or other error
         const kind = classifyStatsError(err)
         setStatsErrorKind(kind)
-        // Auto-retry only genuine outages (offline/timeout). Auth failures
-        // need a user gesture (logout), and server/rate-limit errors must not
-        // be hammered faster than the interval cadence.
         if (kind === 'network') {
           if (backoffTimerRef.current != null) return
           const nextIdx = backoffIdxRef.current + 1
@@ -110,10 +151,6 @@ export function useStatsPolling() {
       .finally(() => {
         inFlightRef.current = false
       })
-
-    withAuthRetry(() => withTimeout(getRescanDelta, STATS_TIMEOUT_MS, 'Failed to load scan changes.'))
-      .then(setDelta)
-      .catch(() => {})
   }, [withAuthRetry, clearBackoff])
 
   useEffect(refreshStats, [refreshStats])

@@ -35,6 +35,7 @@ def auth_app(tmp_path, monkeypatch):
         batch_size=8,
         jwt_secret="test-jwt-secret-32-chars-minimum-length!!",
         allow_unauthenticated=False,
+        cookie_secure=True,
     )
     s.ensure_dirs()
     db.init_db(s.db_path)
