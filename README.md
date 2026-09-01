@@ -10,7 +10,7 @@ CIFS share (network) ──scripts/network_to_local_copy.py──> local SSD sto
 React UI (drag & drop) ──> FastAPI  /api/search  (upload → CLIP embed → top-K) ────┘
 ```
 
-- **Backend**: FastAPI + CLIP (`open_clip`, ViT-B-32 QuickGELU, OpenAI weights,
+- **Backend**: FastAPI + CLIP (`open_clip`, ViT-B-16-SigLIP, webli weights,
   `DEVICE=cpu` by default; CUDA via GPU compose overlay) + FAISS flat
   inner-product index in RAM + SQLite metadata.
 - **Frontend**: Vite + React + TS; served as static files by the same container.
@@ -255,8 +255,8 @@ Environment variables (or `.env`, see `.env.example`):
 | `STORE_PATH` | `/store` | local image mirror (read-only) |
 | `DATA_PATH` | `/data` | SQLite + FAISS + thumbnails |
 | `NETWORK_ROOT` | — | e.g. `\\nas\share\renderings`; prefixes `original_path` |
-| `MODEL_NAME` | `ViT-B-32-quickgelu` | open_clip architecture |
-| `MODEL_PRETRAINED` | `openai` | weight source |
+| `MODEL_NAME` | `ViT-B-16-SigLIP` | open_clip architecture |
+| `MODEL_PRETRAINED` | `webli` | weight source |
 | `DEVICE` | `auto` | `auto`/`cuda`/`mps`/`cpu`; docker-compose defaults to `cpu`, use GPU overlay for CUDA |
 | `BATCH_SIZE` | `64` | embedding batch size; larger values may improve throughput but raise RAM use and pause latency — keep modest for print-resolution renders |
 | `DECODE_WORKERS` | `4` | scan-time threads for image decode + sha256 (PIL/psd-tools) |

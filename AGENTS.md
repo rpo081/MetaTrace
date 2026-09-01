@@ -2,7 +2,7 @@
 
 ## What this is
 
-MetaTrace: reverse image search over ~20k local PSD/JPG/PNG renderings. FastAPI backend (`backend/app`) + React/Vite/TS frontend (`frontend/src`), SQLite metadata + FAISS flat inner-product index, open_clip ViT-B-32 QuickGELU (OpenAI weights, CUDA via Docker GPU overlay; FAISS CPU-only). `plan.md` is original design, `README.md` documents API/env/security — trust them over prose elsewhere. `research.md`/`result-*.md` are one-off audit artifacts.
+MetaTrace: reverse image search over ~20k local PSD/JPG/PNG renderings. FastAPI backend (`backend/app`) + React/Vite/TS frontend (`frontend/src`), SQLite metadata + FAISS flat inner-product index, open_clip ViT-B-16-SigLIP (webli weights, CUDA via Docker GPU overlay; FAISS CPU-only). `plan.md` is original design, `README.md` documents API/env/security — trust them over prose elsewhere. `research.md`/`result-*.md` are one-off audit artifacts.
 
 ## Commands
 
@@ -58,7 +58,7 @@ No CI/lint/pre-commit. Full verification = `pytest + tsc + vite build` (+ `npm t
 ## Toolchain quirks
 
 - `backend/requirements.txt` **exact-pinned deliberately**. `torch` + `--extra-index-url .../whl/cpu` relies on PEP 440 local-version ordering (Linux gets `+cpu` slim wheel, not CUDA). Don't loosen; keep `psd-tools >=1.12.2` (CVE-2026-27809).
-- `MODEL_NAME=ViT-B-32-quickgelu`: OpenAI CLIP requires `-quickgelu` variant; also hardcoded in Dockerfile weight-bake — change both or container tries runtime download (fails offline).
+- `MODEL_NAME=ViT-B-16-SigLIP` (pretrained `webli`): SigLIP 224px model; also hardcoded in Dockerfile weight-bake — change both or container tries runtime download (fails offline, `HF_HUB_OFFLINE=1`).
 - Config in `backend/app/config.py` (pydantic-settings, `.env` from CWD). Most vars plain names (`STORE_PATH`, `MAX_UPLOAD_MB`); security-sensitive use alias choices `METATRACE_ADMIN_TOKEN`/`METATRACE_CORS_ORIGINS`/`METATRACE_JWT_SECRET` (unprefixed also accepted). CORS middleware attaches only when origins set — SPA is same-origin by default. Blank `JWT_SECRET`→`None` (min 32 chars if set).
 - **macOS: run `scripts/fix_mac_omp.sh` once per venv.** faiss-cpu + torch bundle separate `libomp.dylib` → OMP Error #15 or silent SIGSEGV at CLIP/faiss — device-independent. Script relinks faiss onto torch's libomp (idempotent, re-run after reinstall). Linux/Docker unaffected (system libgomp).
 - exiftool optional: absent → XMP empty, `/api/stats` flags it.

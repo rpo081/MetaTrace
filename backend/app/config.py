@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     network_root: str | None = None
 
     # NOTE: OpenAI CLIP weights require the -quickgelu variants; SigLIP/WebLI
-    # uses e.g. ViT-B-16-SigLIP-384 with pretrained="webli" (see .env.example).
-    model_name: str = "ViT-B-16-SigLIP-384"
+    # uses e.g. ViT-B-16-SigLIP with pretrained="webli" (see .env.example).
+    model_name: str = "ViT-B-16-SigLIP"
     model_pretrained: str = "webli"
     # auto = cuda > mps > cpu. Use "cpu" on macOS: faiss + MPS segfault.
     device: str = "auto"
