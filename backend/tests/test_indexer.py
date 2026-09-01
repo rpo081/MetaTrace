@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -682,6 +683,36 @@ def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
     assert decoded == ["b.png"]
     assert resumed.status["inventory_source"] == "snapshot"
     assert not checkpoint_path.exists()
+
+
+def test_load_resume_checkpoint_skips_per_path_resolve_on_boot(env, monkeypatch):
+    ix, store, settings = env
+    _png(store / "a.png", (1, 1, 1))
+    _png(store / "b.png", (2, 2, 2))
+    ix.incremental(trigger="seed")
+    settings.ensure_dirs()
+    checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    model_key = f"{settings.model_name}:{settings.model_pretrained}"
+    checkpoint_path.write_text(
+        json.dumps({"version": 1, "phase": "pending", "mode": "full", "force_rebuild": False,
+         "trigger": "resume-test", "model": model_key,
+         "report": {"trigger": "resume-test", "started_at": 1.0, "duration_sec": 0.0, "seen": 2, "processed": 1, "added": 1, "updated": 0, "removed": 0, "unchanged": 0, "failed": 0, "error_count": 0},
+         "remaining_rel_paths": ["a.png", "b.png"], "remaining_added_rel_paths": ["b.png"], "updated_at": "2026-01-01T00:00:00Z"}),
+        encoding="utf-8",
+    )
+
+    original_resolve = Path.resolve
+
+    def tracking_resolve(self, *args, **kwargs):
+        if self.name in {"a.png", "b.png"}:
+            raise AssertionError("startup should not resolve every pending checkpoint path")
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", tracking_resolve)
+
+    resumed = indexer_mod.Indexer(settings)
+    resumed.load_or_create()
+    assert resumed.status["state"] == "paused"
 
 
 def test_stale_planning_checkpoint_is_discarded_on_boot(env, caplog):

@@ -27,6 +27,17 @@ def _checkpoint_file(settings) -> Path:
     return settings.data_path / "scan_checkpoint.json"
 
 
+def _is_safe_rel_path(rel_path: str) -> bool:
+    normalized = rel_path.replace("\\", "/")
+    if normalized.startswith("/") or normalized.startswith("//"):
+        return False
+    if ".." in normalized.split("/"):
+        return False
+    if len(normalized) >= 2 and normalized[1] == ":":
+        return False
+    return True
+
+
 def _read_resume_checkpoint(settings) -> dict | None:
     path = _checkpoint_file(settings)
     if not path.exists():
@@ -44,7 +55,10 @@ def _read_resume_checkpoint(settings) -> dict | None:
         log.warning("discarding scan checkpoint for different model: %s", data.get("model"))
         _clear_resume_checkpoint(settings)
         return None
-    # Validate remaining_rel_paths when phase is pending — must be list[str] inside store
+    # Validate remaining_rel_paths structurally when phase is pending.
+    # Avoid resolving every path during startup: large paused checkpoints on a
+    # slow or network-backed store would block the API from becoming ready.
+    # Resume-time path materialization still performs containment checks.
     if data.get("phase") == "pending":
         rr = data.get("remaining_rel_paths")
         if rr is None:
@@ -55,23 +69,9 @@ def _read_resume_checkpoint(settings) -> dict | None:
             log.warning("scan checkpoint remaining_rel_paths is not list[str] — discarding")
             _clear_resume_checkpoint(settings)
             return None
-        # Ensure paths are contained and normalized
-        root = settings.store_path.resolve()
         for rel in rr:
-            normalized = rel.replace("\\", "/")
-            if normalized.startswith("/") or ".." in normalized.split("/"):
+            if not _is_safe_rel_path(rel):
                 log.warning("scan checkpoint contains unsafe path %r — discarding", rel)
-                _clear_resume_checkpoint(settings)
-                return None
-            # Resolve and contain check (lightweight)
-            try:
-                abs_path = (settings.store_path / normalized).resolve()
-                if not abs_path.is_relative_to(root):
-                    log.warning("scan checkpoint path escapes store %r — discarding", rel)
-                    _clear_resume_checkpoint(settings)
-                    return None
-            except Exception:
-                log.warning("scan checkpoint path invalid %r — discarding", rel)
                 _clear_resume_checkpoint(settings)
                 return None
     return data
@@ -226,6 +226,7 @@ class CheckpointManager:
 
 __all__ = [
     "SCAN_CHECKPOINT_VERSION",
+    "_is_safe_rel_path",
     "_read_resume_checkpoint",
     "_write_resume_checkpoint",
     "_clear_resume_checkpoint",

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from . import db, embeddings, metadata
+from .checkpoint import _is_safe_rel_path
 from .models.scan import DiskFile, ScanReport, sha256_file, snapshot_meta_to_disk_file as _snapshot_meta_to_disk_file
 
 log = logging.getLogger(__name__)
@@ -129,23 +130,10 @@ def _sync_network_root(settings) -> None:
 def _disk_files_for_rel_paths(settings, rel_paths: list[str], report: ScanReport) -> list[DiskFile]:
     pending: list[DiskFile] = []
     for rel_path in rel_paths:
-        abs_path = settings.store_path / rel_path
-        try:
-            stat = abs_path.stat()
-        except OSError as exc:
-            report.failed += 1
-            report.processed += 1
-            report.errors.append(f"{rel_path}: {exc}")
-            log.warning("resume stat failed: %s (%s)", rel_path, exc)
+        disk_file = _disk_file_from_live_stat(settings, rel_path, report)
+        if disk_file is None:
             continue
-        pending.append(
-            DiskFile(
-                rel_path=rel_path,
-                abs_path=abs_path,
-                size=stat.st_size,
-                mtime=stat.st_mtime,
-            )
-        )
+        pending.append(disk_file)
     return pending
 
 
@@ -155,7 +143,14 @@ def _disk_files_from_snapshot(settings, rel_paths: list[str], report: ScanReport
         return None
     pending: list[DiskFile] = []
     for rel_path in rel_paths:
-        disk_file = snapshot.get(rel_path.replace("\\", "/"))
+        normalized = rel_path.replace("\\", "/")
+        if not _is_safe_rel_path(normalized):
+            log.warning("blocked resume checkpoint path traversal attempt: rel_path=%r", rel_path)
+            report.failed += 1
+            report.processed += 1
+            report.errors.append(f"{rel_path}: blocked path traversal")
+            continue
+        disk_file = snapshot.get(normalized)
         if disk_file is None:
             return None
         pending.append(disk_file)
@@ -166,7 +161,7 @@ def _disk_file_from_live_stat(settings, rel_path: str, report: ScanReport) -> Di
     # Path containment check mirrors api/routes.py:_store_file to block
     # crafted delta payloads (e.g. "../../etc/passwd") from escaping the store.
     normalized = rel_path.replace("\\", "/")
-    if normalized.startswith("/") or ".." in normalized.split("/"):
+    if not _is_safe_rel_path(normalized):
         log.warning("blocked delta path traversal attempt: rel_path=%r", rel_path)
         report.failed += 1
         report.processed += 1
