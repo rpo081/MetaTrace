@@ -48,7 +48,7 @@ except ImportError:
         "max", "3dsmax", "input", "textures", "texturen", "tex",
         "references", "referenzen",
     })
-    EXCLUDED_DIR_LEVELS = 2
+    EXCLUDED_DIR_LEVELS = 3
 
 SYSTEM_DIR_NAMES = frozenset({
     "$RECYCLE.BIN",
