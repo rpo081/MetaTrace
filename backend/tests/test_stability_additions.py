@@ -400,7 +400,7 @@ def test_scheduler_resume_cold_start(tmp_path, monkeypatch):
     (s.data_path / "scan_checkpoint.json").write_text(json.dumps({
         "version": 1, "phase": "pending", "mode": "full", "force_rebuild": False,
         "trigger": "cold-resume",
-        "model": "ViT-B-32-quickgelu:openai",
+        "model": f"{s.model_name}:{s.model_pretrained}",
         "report": {"trigger": "cold-resume", "started_at": 1.0, "duration_sec": 0.0, "seen": 2, "processed": 1, "added": 1, "updated": 0, "removed": 0, "unchanged": 0, "failed": 0, "error_count": 0},
         "remaining_rel_paths": ["b.png"], "remaining_added_rel_paths": ["b.png"],
         "updated_at": "2026-01-01T00:00:00Z"

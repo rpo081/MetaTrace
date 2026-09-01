@@ -653,14 +653,12 @@ def test_resume_checkpoint_restores_paused_scan_after_restart(env, monkeypatch):
     settings.latest_store_snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
 
     checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    model_key = f"{settings.model_name}:{settings.model_pretrained}"
     checkpoint_path.write_text(
-        '{"version":1,"phase":"pending","mode":"full","force_rebuild":false,'
-        '"trigger":"resume-test","model":"ViT-B-32-quickgelu:openai",'
-        '"report":{"trigger":"resume-test","started_at":1.0,"duration_sec":0.0,'
-        '"seen":2,"processed":1,"added":1,"updated":0,"removed":0,'
-        '"unchanged":0,"failed":0,"error_count":0},'
-        '"remaining_rel_paths":["b.png"],"remaining_added_rel_paths":["b.png"],'
-        '"updated_at":"2026-01-01T00:00:00Z"}',
+        json.dumps({"version": 1, "phase": "pending", "mode": "full", "force_rebuild": False,
+         "trigger": "resume-test", "model": model_key,
+         "report": {"trigger": "resume-test", "started_at": 1.0, "duration_sec": 0.0, "seen": 2, "processed": 1, "added": 1, "updated": 0, "removed": 0, "unchanged": 0, "failed": 0, "error_count": 0},
+         "remaining_rel_paths": ["b.png"], "remaining_added_rel_paths": ["b.png"], "updated_at": "2026-01-01T00:00:00Z"}),
         encoding="utf-8",
     )
 
@@ -698,14 +696,12 @@ def test_stale_planning_checkpoint_is_discarded_on_boot(env, caplog):
     ix.incremental(trigger="seed")
     settings.ensure_dirs()
     checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    model_key = f"{settings.model_name}:{settings.model_pretrained}"
     checkpoint_path.write_text(
-        '{"version":1,"phase":"planning","mode":"full","force_rebuild":false,'
-        '"trigger":"manual-api","model":"ViT-B-32-quickgelu:openai",'
-        '"report":{"trigger":"manual-api","started_at":1.0,"duration_sec":0.0,'
-        '"seen":0,"processed":0,"added":0,"updated":0,"removed":0,'
-        '"unchanged":0,"failed":0,"error_count":0},'
-        '"delta_info":null,'
-        '"updated_at":"2026-01-01T00:00:00Z"}',
+        json.dumps({"version": 1, "phase": "planning", "mode": "full", "force_rebuild": False,
+         "trigger": "manual-api", "model": model_key,
+         "report": {"trigger": "manual-api", "started_at": 1.0, "duration_sec": 0.0, "seen": 0, "processed": 0, "added": 0, "updated": 0, "removed": 0, "unchanged": 0, "failed": 0, "error_count": 0},
+         "delta_info": None, "updated_at": "2026-01-01T00:00:00Z"}),
         encoding="utf-8",
     )
 
@@ -748,14 +744,12 @@ def test_resume_replay_of_committed_files_does_not_duplicate(env):
     # Stale checkpoint: b.png listed as remaining "added" work, although a
     # later chunk of the crashed run already committed+published it.
     checkpoint_path = settings.data_path / "scan_checkpoint.json"
+    model_key = f"{settings.model_name}:{settings.model_pretrained}"
     checkpoint_path.write_text(
-        '{"version":1,"phase":"pending","mode":"full","force_rebuild":false,'
-        '"trigger":"resume-test","model":"ViT-B-32-quickgelu:openai",'
-        '"report":{"trigger":"resume-test","started_at":1.0,"duration_sec":0.0,'
-        '"seen":2,"processed":1,"added":1,"updated":0,"removed":0,'
-        '"unchanged":0,"failed":0,"error_count":0},'
-        '"remaining_rel_paths":["b.png"],"remaining_added_rel_paths":["b.png"],'
-        '"updated_at":"2026-01-01T00:00:00Z"}',
+        json.dumps({"version": 1, "phase": "pending", "mode": "full", "force_rebuild": False,
+         "trigger": "resume-test", "model": model_key,
+         "report": {"trigger": "resume-test", "started_at": 1.0, "duration_sec": 0.0, "seen": 2, "processed": 1, "added": 1, "updated": 0, "removed": 0, "unchanged": 0, "failed": 0, "error_count": 0},
+         "remaining_rel_paths": ["b.png"], "remaining_added_rel_paths": ["b.png"], "updated_at": "2026-01-01T00:00:00Z"}),
         encoding="utf-8",
     )
 

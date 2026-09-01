@@ -8,6 +8,8 @@ services:
       STORE_PATH: /store
       DATA_PATH: /data
       NETWORK_ROOT: ${NETWORK_ROOT:-}
+      MODEL_NAME: ${MODEL_NAME:-ViT-B-16-SigLIP-384}
+      MODEL_PRETRAINED: ${MODEL_PRETRAINED:-webli}
       RUN_INITIAL_SCAN_ON_START: ${RUN_INITIAL_SCAN_ON_START:-true}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K:-24}
       # Force CPU mode for CLIP embeddings.

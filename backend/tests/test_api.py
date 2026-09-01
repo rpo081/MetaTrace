@@ -412,14 +412,13 @@ def test_startup_exposes_paused_state_from_resume_checkpoint(tmp_path, monkeypat
     settings.ensure_dirs()
     (settings.store_path / "x.png").write_bytes(b"not used")
     checkpoint = settings.data_path / "scan_checkpoint.json"
+    import json as _json
+    model_key = f"{settings.model_name}:{settings.model_pretrained}"
     checkpoint.write_text(
-        '{"version":1,"phase":"pending","mode":"full","force_rebuild":false,'
-        '"trigger":"resume-test","model":"ViT-B-32-quickgelu:openai",'
-        '"report":{"trigger":"resume-test","started_at":1.0,"duration_sec":0.0,'
-        '"seen":10,"processed":4,"added":4,"updated":0,"removed":0,'
-        '"unchanged":0,"failed":0,"error_count":0},'
-        '"remaining_rel_paths":["later.png"],"remaining_added_rel_paths":["later.png"],'
-        '"updated_at":"2026-01-01T00:00:00Z"}',
+        _json.dumps({"version": 1, "phase": "pending", "mode": "full", "force_rebuild": False,
+         "trigger": "resume-test", "model": model_key,
+         "report": {"trigger": "resume-test", "started_at": 1.0, "duration_sec": 0.0, "seen": 10, "processed": 4, "added": 4, "updated": 0, "removed": 0, "unchanged": 0, "failed": 0, "error_count": 0},
+         "remaining_rel_paths": ["later.png"], "remaining_added_rel_paths": ["later.png"], "updated_at": "2026-01-01T00:00:00Z"}),
         encoding="utf-8",
     )
     with TestClient(app) as c:

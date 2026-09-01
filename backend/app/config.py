@@ -36,9 +36,10 @@ class Settings(BaseSettings):
     # original_path is derived as <network_root>\<rel_path with backslashes>.
     network_root: str | None = None
 
-    # NOTE: OpenAI CLIP weights require the -quickgelu architecture variants.
-    model_name: str = "ViT-B-32-quickgelu"
-    model_pretrained: str = "openai"
+    # NOTE: OpenAI CLIP weights require the -quickgelu variants; SigLIP/WebLI
+    # uses e.g. ViT-B-16-SigLIP-384 with pretrained="webli" (see .env.example).
+    model_name: str = "ViT-B-16-SigLIP-384"
+    model_pretrained: str = "webli"
     # auto = cuda > mps > cpu. Use "cpu" on macOS: faiss + MPS segfault.
     device: str = "auto"
     # Images per embedding batch. 64 keeps peak RAM sane for print-resolution
