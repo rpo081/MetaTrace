@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from network_menu_module import load_network_menu_module
@@ -6,6 +8,25 @@ from network_copy_module import load_network_copy_module
 
 menu = load_network_menu_module()
 nc = load_network_copy_module()
+
+
+def test_archived_menu_imports_from_repo_root():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import runpy; "
+                "runpy.run_path('scripts/archive/network_to_local_menu.py', "
+                "run_name='not_main')"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_settings_defaults_include_size_limit():
