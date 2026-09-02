@@ -274,6 +274,7 @@ def test_sanitize_filename_crlf_and_quote(tmp_path, monkeypatch):
     db.init_db(s.db_path)
     db.create_user(s.db_path, username="admin", email="a@ex.com", password_hash=hash_password("Abc12345"), role="admin")
     Indexer(s).incremental(trigger="seed")
+    monkeypatch.setattr("backend.app.api.routes._store_file", lambda _s, _rel: s.store_path / "x.png")
     app = create_app(s)
     with TestClient(app) as c:
         tok = _login(c, "admin")
@@ -281,7 +282,6 @@ def test_sanitize_filename_crlf_and_quote(tmp_path, monkeypatch):
         # CRLF case
         evil_name = 'evil\r\nSet-Cookie: hacked.png'
         evil_id = db.upsert_image(s.db_path, rel_path=evil_name, original_path=rf"\\nas\{evil_name}", size=1, mtime=1.0, sha256=None, width=None, height=None, xmp={})
-        (s.store_path / evil_name).write_bytes(b"fake")
         r = c.get(f"/api/file/{evil_id}", headers=headers)
         assert r.status_code == 200
         cd = r.headers.get("content-disposition", "")
@@ -294,7 +294,6 @@ def test_sanitize_filename_crlf_and_quote(tmp_path, monkeypatch):
         # quoted string case
         evil2 = 'evil"quote.png'
         evil2_id = db.upsert_image(s.db_path, rel_path=evil2, original_path=rf"\\nas\{evil2}", size=1, mtime=1.0, sha256=None, width=None, height=None, xmp={})
-        (s.store_path / evil2).write_bytes(b"fake2")
         r2 = c.get(f"/api/file/{evil2_id}", headers=headers)
         assert r2.status_code == 200
         cd2 = r2.headers.get("content-disposition", "")
@@ -308,7 +307,6 @@ def test_sanitize_filename_crlf_and_quote(tmp_path, monkeypatch):
         # combined \r\n + " case
         evil3 = 'a\r\n"b.png'
         evil3_id = db.upsert_image(s.db_path, rel_path=evil3, original_path=rf"\\nas\{evil3}", size=1, mtime=1.0, sha256=None, width=None, height=None, xmp={})
-        (s.store_path / evil3).write_bytes(b"fake3")
         r3 = c.get(f"/api/file/{evil3_id}", headers=headers)
         assert r3.status_code == 200
         cd3 = r3.headers.get("content-disposition", "")

@@ -231,7 +231,10 @@ def browse_images(
     mtime_to: float | None = Query(default=None),
     ext: str | None = Query(default=None),
     folder: str | None = Query(default=None),
+    filename: str | None = Query(default=None),
     q: str | None = Query(default=None),
+    xmp: str | None = Query(default=None),
+    xmp_query: str | None = Query(default=None),
     has_xmp: bool = Query(default=False),
     s: Settings = Depends(get_settings),
     user=Depends(require_role("admin", "editor", "viewer")),
@@ -243,8 +246,10 @@ def browse_images(
     if order not in _VALID_ORDER:
         raise HTTPException(400, "invalid order (must be 'asc' or 'desc')")
     capped_limit = min(limit, s.max_browse_limit)
+    fn = filename if filename is not None else q
+    xmp_text = xmp if xmp is not None else xmp_query
     # Guard for 200k scale: very high offsets without filters are expensive (SQLite OFFSET scan)
-    if offset > 50000 and not any(v is not None for v in [size_min, size_max, width_min, width_max, height_min, height_max, ext, folder, q]) and not has_xmp and indexed_from is None and indexed_to is None and mtime_from is None and mtime_to is None:
+    if offset > 50000 and not any(v is not None for v in [size_min, size_max, width_min, width_max, height_min, height_max, ext, folder, fn, xmp_text]) and not has_xmp and indexed_from is None and indexed_to is None and mtime_from is None and mtime_to is None:
         log.info("high offset browse without filters: offset=%d (may be slow at 200k)", offset)
     filters = {
         "size_min": size_min,
@@ -259,7 +264,9 @@ def browse_images(
         "mtime_to": mtime_to,
         "ext": ext,
         "folder": folder,
-        "q": q,
+        "filename": fn,
+        "q": fn,
+        "xmp": xmp_text,
         "has_xmp": has_xmp,
     }
     # Strip None values so browse_images only sees active filters

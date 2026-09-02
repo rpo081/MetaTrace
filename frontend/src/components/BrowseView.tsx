@@ -42,7 +42,13 @@ export default function BrowseView() {
 
   const abortRef = useRef<AbortController | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const prevQRef = useRef<BrowseFilters['q']>(undefined)
+  const prevTextFiltersRef = useRef<{
+    filename?: string
+    q?: string
+    folder?: string
+    xmp?: string
+    xmp_query?: string
+  }>({})
 
   // Persist view mode via central storage abstraction
   useEffect(() => {
@@ -74,15 +80,27 @@ export default function BrowseView() {
 
   // Fetch on filter/sort/order/offset change, but debounce text-query requests
   useEffect(() => {
-    const qChanged = filters.q !== prevQRef.current
-    prevQRef.current = filters.q
+    const textChanged =
+      filters.filename !== prevTextFiltersRef.current.filename ||
+      filters.q !== prevTextFiltersRef.current.q ||
+      filters.folder !== prevTextFiltersRef.current.folder ||
+      filters.xmp !== prevTextFiltersRef.current.xmp ||
+      filters.xmp_query !== prevTextFiltersRef.current.xmp_query
+
+    prevTextFiltersRef.current = {
+      filename: filters.filename,
+      q: filters.q,
+      folder: filters.folder,
+      xmp: filters.xmp,
+      xmp_query: filters.xmp_query,
+    }
 
     if (debounceRef.current) {
       clearTimeout(debounceRef.current)
       debounceRef.current = null
     }
 
-    if (qChanged) {
+    if (textChanged) {
       debounceRef.current = setTimeout(() => {
         fetchData(filters, sort, order, offset)
         debounceRef.current = null

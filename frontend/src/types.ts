@@ -41,9 +41,12 @@ export interface BrowseImage {
 }
 
 export interface BrowseFilters {
+  filename?: string
   q?: string
   ext?: string
   folder?: string
+  xmp?: string
+  xmp_query?: string
   size_min?: number
   size_max?: number
   width_min?: number

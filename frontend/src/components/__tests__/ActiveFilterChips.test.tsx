@@ -9,10 +9,11 @@ describe('ActiveFilterChips', () => {
   })
 
   it('renders chips and escapes q content as text', () => {
-    const filters: any = { q: '<script>alert(1)</script>', ext: 'png' }
+    const filters: any = { filename: '<script>alert(1)</script>', ext: 'png', xmp: 'tag1' }
     render(<ActiveFilterChips filters={filters} onRemove={vi.fn()} onClearAll={vi.fn()} />)
-    // q is rendered as text, not HTML
-    expect(screen.getByText('Search: "<script>alert(1)</script>"')).toBeInTheDocument()
+    // filename is rendered as text, not HTML
+    expect(screen.getByText('Filename: "<script>alert(1)</script>"')).toBeInTheDocument()
+    expect(screen.getByText('XMP: "tag1"')).toBeInTheDocument()
     // no script element injected
     expect(document.querySelector('script')).toBeNull()
     // text is escaped in HTML source
@@ -22,7 +23,7 @@ describe('ActiveFilterChips', () => {
   it('calls onRemove and onClearAll', () => {
     const onRemove = vi.fn()
     const onClearAll = vi.fn()
-    const filters: any = { q: 'hello', ext: 'jpg', folder: 'a' }
+    const filters: any = { filename: 'hello', ext: 'jpg', folder: 'a', xmp: 'meta' }
     render(<ActiveFilterChips filters={filters} onRemove={onRemove} onClearAll={onClearAll} />)
     const removeBtns = screen.getAllByLabelText(/Remove filter:/)
     fireEvent.click(removeBtns[0])

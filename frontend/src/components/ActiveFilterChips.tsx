@@ -9,9 +9,12 @@ interface Props {
 
 function labelForKey(key: string, value: unknown): string {
   switch (key) {
-    case 'q': return `Search: "${value}"`
+    case 'filename': return `Filename: "${value}"`
+    case 'q': return `Filename: "${value}"`
     case 'ext': return `Ext: ${value}`
-    case 'folder': return `Folder: ${value}`
+    case 'folder': return `Folder: "${value}"`
+    case 'xmp': return `XMP: "${value}"`
+    case 'xmp_query': return `XMP: "${value}"`
     case 'has_xmp': return 'Has XMP'
     case 'size_min': return `Min size: ${Math.round(Number(value) / (1024 * 1024))} MB`
     case 'size_max': return `Max size: ${Math.round(Number(value) / (1024 * 1024))} MB`

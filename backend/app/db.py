@@ -91,9 +91,25 @@ class ThumbnailCandidate:
     indexed_at: str
 
 
+def _filename_of(path: str | None) -> str:
+    if not path:
+        return ""
+    p = str(path).replace("\\", "/").rstrip("/")
+    return p.rsplit("/", 1)[-1] if "/" in p else p
+
+
+def _dirname_of(path: str | None) -> str:
+    if not path:
+        return ""
+    p = str(path).replace("\\", "/").rstrip("/")
+    return p.rsplit("/", 1)[0] if "/" in p else ""
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.create_function("filename_of", 1, _filename_of, deterministic=True)
+    conn.create_function("dirname_of", 1, _dirname_of, deterministic=True)
     # Per-connection pragmas for 200k scale: WAL allows concurrent
     # readers during bulk upserts; NORMAL + busy_timeout avoids
     # SQLITE_BUSY under thumb/browse/scan concurrency.
@@ -487,21 +503,32 @@ def browse_images(
             ext = f".{ext}"
         where_clauses.append("SUBSTR(rel_path, -LENGTH(?)) = ?")
         params.extend([ext.lower(), ext.lower()])
-    # --- folder (LIKE prefix match) ---
-    if filters.get("folder") is not None:
-        escaped_folder = escape_like(filters["folder"])
-        where_clauses.append("rel_path LIKE ? ESCAPE '\\'")
-        params.append(f"{escaped_folder}%")
-    # --- text search (LIKE on rel_path + xmp) ---
-    if filters.get("q") is not None and filters["q"].strip():
-        terms = [t.strip() for t in filters["q"].strip().split() if t.strip()]
-        for term in terms:
+    # --- folder (match anywhere within directory path, excluding filename) ---
+    if filters.get("folder") is not None and str(filters["folder"]).strip():
+        folder_terms = [t.strip() for t in str(filters["folder"]).strip().split() if t.strip()]
+        for term in folder_terms:
             escaped = escape_like(term)
             pattern = f"%{escaped}%"
-            where_clauses.append(
-                "(rel_path LIKE ? ESCAPE '\\' OR xmp LIKE ? ESCAPE '\\')"
-            )
-            params.extend([pattern, pattern])
+            where_clauses.append("dirname_of(rel_path) LIKE ? ESCAPE '\\'")
+            params.append(pattern)
+    # --- filename (match within filename only, not full path or xmp) ---
+    fn = filters.get("filename") if filters.get("filename") is not None else filters.get("q")
+    if fn is not None and str(fn).strip():
+        fn_terms = [t.strip() for t in str(fn).strip().split() if t.strip()]
+        for term in fn_terms:
+            escaped = escape_like(term)
+            pattern = f"%{escaped}%"
+            where_clauses.append("filename_of(rel_path) LIKE ? ESCAPE '\\'")
+            params.append(pattern)
+    # --- xmp text (match within XMP metadata tags only) ---
+    xmp_query = filters.get("xmp") if filters.get("xmp") is not None else (filters.get("xmp_query") or filters.get("xmp_tag"))
+    if xmp_query is not None and str(xmp_query).strip():
+        xmp_terms = [t.strip() for t in str(xmp_query).strip().split() if t.strip()]
+        for term in xmp_terms:
+            escaped = escape_like(term)
+            pattern = f"%{escaped}%"
+            where_clauses.append("xmp LIKE ? ESCAPE '\\'")
+            params.append(pattern)
     # --- has_xmp ---
     if filters.get("has_xmp"):
         where_clauses.append("xmp != '{}'")

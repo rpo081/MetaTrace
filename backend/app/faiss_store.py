@@ -138,14 +138,15 @@ class FaissStore:
             log.warning("fsync failed for %s", tmp, exc_info=True)
         tmp.replace(self.settings.index_file)
         # fsync directory to persist the rename on POSIX
-        try:
-            dir_fd = os.open(str(self.settings.data_path), os.O_DIRECTORY)
+        if hasattr(os, "O_DIRECTORY"):
             try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
+                dir_fd = os.open(str(self.settings.data_path), os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
         with self._lock:
             self.index = index
 

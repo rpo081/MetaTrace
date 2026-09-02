@@ -147,16 +147,15 @@ def test_delta_path_traversal_blocked(tmp_path, monkeypatch):
     assert df is not None and df.rel_path == "ok.png"
 
 
-def test_sanitize_filename_blocks_crlf(auth_app):
+def test_sanitize_filename_blocks_crlf(auth_app, monkeypatch):
     client, s = auth_app
+    monkeypatch.setattr("backend.app.api.routes._store_file", lambda _s, _rel: s.store_path / "x.png")
     # Insert row with CRLF in rel_path name part (basename used for Content-Disposition)
     evil_name = 'evil\r\nSet-Cookie: a=b.png'
     evil_id = db.upsert_image(
         s.db_path, rel_path=evil_name, original_path=rf"\\nas\{evil_name}",
         size=1, mtime=1.0, sha256=None, width=None, height=None, xmp={},
     )
-    # Ensure source file exists so _store_file passes then file response
-    (s.store_path / evil_name).write_bytes(b"fake")
     admin_tok = _login(client, "admin")
     r = client.get(f"/api/file/{evil_id}", headers={"Authorization": f"Bearer {admin_tok}"})
     assert r.status_code == 200

@@ -210,12 +210,67 @@ def test_browse_folder_escape_percent(api_client, tmp_path):
 def test_browse_q_multi_term_and(api_client):
     s = api_client.app.state.settings
     db.upsert_image(s.db_path, rel_path="alpha_beta.png", original_path=r"\\nas\alpha_beta.png", size=10, mtime=10.0, sha256=None, width=10, height=10, xmp={"Title": "hello world"})
-    r = api_client.get("/api/images", params={"q": "alpha world"})
+    r = api_client.get("/api/images", params={"filename": "alpha beta"})
     assert r.status_code == 200
     assert any(i["rel_path"] == "alpha_beta.png" for i in r.json()["items"])
-    r2 = api_client.get("/api/images", params={"q": "alpha missingterm"})
+    r2 = api_client.get("/api/images", params={"filename": "alpha missingterm"})
     assert r2.status_code == 200
     assert not any(i["rel_path"] == "alpha_beta.png" for i in r2.json()["items"])
+
+
+def test_browse_filename_isolation(api_client):
+    s = api_client.app.state.settings
+    db.upsert_image(s.db_path, rel_path="folder_alpha/beta.png", original_path=r"\\nas\folder_alpha\beta.png", size=10, mtime=10.0, sha256=None, width=10, height=10, xmp={"tag": "gamma"})
+    # Filename matches filename part
+    r = api_client.get("/api/images", params={"filename": "beta"})
+    assert r.status_code == 200
+    assert any(i["rel_path"] == "folder_alpha/beta.png" for i in r.json()["items"])
+    # Filename should NOT match folder name
+    r_folder = api_client.get("/api/images", params={"filename": "folder_alpha"})
+    assert r_folder.status_code == 200
+    assert not any(i["rel_path"] == "folder_alpha/beta.png" for i in r_folder.json()["items"])
+    # Filename should NOT match XMP content
+    r_xmp = api_client.get("/api/images", params={"filename": "gamma"})
+    assert r_xmp.status_code == 200
+    assert not any(i["rel_path"] == "folder_alpha/beta.png" for i in r_xmp.json()["items"])
+
+
+def test_browse_folder_anywhere_in_path_not_filename(api_client):
+    s = api_client.app.state.settings
+    db.upsert_image(s.db_path, rel_path="projects/2024/renders/hero.png", original_path=r"\\nas\projects\2024\renders\hero.png", size=10, mtime=10.0, sha256=None, width=10, height=10, xmp={})
+    db.upsert_image(s.db_path, rel_path="hero.png", original_path=r"\\nas\hero.png", size=10, mtime=10.0, sha256=None, width=10, height=10, xmp={})
+    # Folder matches middle of path
+    r_mid = api_client.get("/api/images", params={"folder": "2024"})
+    assert r_mid.status_code == 200
+    assert any(i["rel_path"] == "projects/2024/renders/hero.png" for i in r_mid.json()["items"])
+    # Folder matches subfolder
+    r_sub = api_client.get("/api/images", params={"folder": "renders"})
+    assert r_sub.status_code == 200
+    assert any(i["rel_path"] == "projects/2024/renders/hero.png" for i in r_sub.json()["items"])
+    # Folder does NOT match filename
+    r_fn = api_client.get("/api/images", params={"folder": "hero"})
+    assert r_fn.status_code == 200
+    assert not any(i["rel_path"] == "projects/2024/renders/hero.png" for i in r_fn.json()["items"])
+    assert not any(i["rel_path"] == "hero.png" for i in r_fn.json()["items"])
+
+
+def test_browse_xmp_tag_filter(api_client):
+    s = api_client.app.state.settings
+    db.upsert_image(s.db_path, rel_path="xmp_dir/sample.png", original_path=r"\\nas\xmp_dir\sample.png", size=10, mtime=10.0, sha256=None, width=10, height=10, xmp={"Creator": "John Doe", "Project": "Mars"})
+    # XMP matches content inside XMP tags
+    r_xmp1 = api_client.get("/api/images", params={"xmp": "John Doe"})
+    assert r_xmp1.status_code == 200
+    assert any(i["rel_path"] == "xmp_dir/sample.png" for i in r_xmp1.json()["items"])
+    r_xmp2 = api_client.get("/api/images", params={"xmp": "Mars"})
+    assert r_xmp2.status_code == 200
+    assert any(i["rel_path"] == "xmp_dir/sample.png" for i in r_xmp2.json()["items"])
+    # XMP does NOT match filename or directory
+    r_fn = api_client.get("/api/images", params={"xmp": "sample"})
+    assert r_fn.status_code == 200
+    assert not any(i["rel_path"] == "xmp_dir/sample.png" for i in r_fn.json()["items"])
+    r_dir = api_client.get("/api/images", params={"xmp": "xmp_dir"})
+    assert r_dir.status_code == 200
+    assert not any(i["rel_path"] == "xmp_dir/sample.png" for i in r_dir.json()["items"])
 
 
 def test_browse_has_xmp(api_client):
@@ -249,7 +304,7 @@ def test_browse_order_and_ext_without_dot(api_client):
 def test_browse_combined_filters(api_client):
     s = api_client.app.state.settings
     db.upsert_image(s.db_path, rel_path="combo/a.png", original_path=r"\\nas\combo\a.png", size=500, mtime=20.0, sha256=None, width=20, height=20, xmp={})
-    r = api_client.get("/api/images", params={"folder": "combo", "size_min": 100, "size_max": 1000, "q": "combo"})
+    r = api_client.get("/api/images", params={"folder": "combo", "size_min": 100, "size_max": 1000, "filename": "a"})
     assert r.status_code == 200
     assert any(i["rel_path"] == "combo/a.png" for i in r.json()["items"])
 

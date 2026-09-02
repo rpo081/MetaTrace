@@ -35,28 +35,24 @@ export default function FilterSidebar({ filters, onChange }: Props) {
         </button>
       )}
 
-      {/* Search */}
+      {/* Filename */}
       <details open>
-        <summary>Search</summary>
+        <summary>Filename</summary>
         <div className="filter-section">
           <input
-            id="filter-search"
+            id="filter-filename"
             type="text"
             className="text-input"
-            placeholder="Filename or XMP…"
-            value={filters.q ?? ''}
-            onChange={(e) => set('q', e.target.value || undefined)}
+            placeholder="Filename…"
+            value={filters.filename ?? filters.q ?? ''}
+            onChange={(e) => {
+              const val = e.target.value || undefined
+              const next = { ...filters, filename: val }
+              delete next.q
+              onChange(next)
+            }}
           />
-          <label className="filter-check" htmlFor="filter-has-xmp">
-            <input
-              id="filter-has-xmp"
-              type="checkbox"
-              checked={filters.has_xmp ?? false}
-              onChange={(e) => set('has_xmp', e.target.checked || undefined)}
-            />
-            Has XMP data
-          </label>
-          <button type="button" className="btn btn-sm" onClick={() => clearSection(['q', 'has_xmp'])}>Clear</button>
+          <button type="button" className="btn btn-sm" onClick={() => clearSection(['filename', 'q'])}>Clear</button>
         </div>
       </details>
 
@@ -68,11 +64,41 @@ export default function FilterSidebar({ filters, onChange }: Props) {
             id="filter-folder"
             type="text"
             className="text-input"
-            placeholder="Folder prefix…"
+            placeholder="Folder name…"
             value={filters.folder ?? ''}
             onChange={(e) => set('folder', e.target.value || undefined)}
           />
           <button type="button" className="btn btn-sm" onClick={() => clearSection(['folder'])}>Clear</button>
+        </div>
+      </details>
+
+      {/* XMP Tags */}
+      <details>
+        <summary>XMP Tags</summary>
+        <div className="filter-section">
+          <input
+            id="filter-xmp"
+            type="text"
+            className="text-input"
+            placeholder="XMP tag content…"
+            value={filters.xmp ?? filters.xmp_query ?? ''}
+            onChange={(e) => {
+              const val = e.target.value || undefined
+              const next = { ...filters, xmp: val }
+              delete next.xmp_query
+              onChange(next)
+            }}
+          />
+          <label className="filter-check" htmlFor="filter-has-xmp">
+            <input
+              id="filter-has-xmp"
+              type="checkbox"
+              checked={filters.has_xmp ?? false}
+              onChange={(e) => set('has_xmp', e.target.checked || undefined)}
+            />
+            Has XMP data
+          </label>
+          <button type="button" className="btn btn-sm" onClick={() => clearSection(['xmp', 'xmp_query', 'has_xmp'])}>Clear</button>
         </div>
       </details>
 
