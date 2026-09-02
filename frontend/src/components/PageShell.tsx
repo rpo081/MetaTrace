@@ -13,6 +13,8 @@ import ScanReportLine, { getReportRates } from './ScanReportLine'
 import { useAuth } from '../features/auth/AuthContext'
 import type { StatsErrorKind } from '../hooks/useStatsPolling'
 
+declare const __APP_VERSION__: string
+
 function fmtRate(val: number | undefined): string {
   if (val == null || val <= 0) return '0'
   if (val >= 100) return `${Math.round(val)}`
@@ -221,7 +223,10 @@ export default function PageShell({
             aria-label="Go to home"
           >
             <div>
-              <h1>MetaTrace</h1>
+              <div className="topbar-title">
+                <h1>MetaTrace</h1>
+                <span className="topbar-version">{__APP_VERSION__}</span>
+              </div>
               <div className="topbar-subtitle muted">Reverse image search</div>
             </div>
           </button>

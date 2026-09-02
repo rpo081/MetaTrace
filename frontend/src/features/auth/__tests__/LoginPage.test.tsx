@@ -49,6 +49,7 @@ function renderLogin() {
 describe('LoginPage', () => {
   it('renders_username_and_password_fields', () => {
     renderLogin()
+    expect(document.querySelector('.login-version')).toHaveTextContent(/\S/)
     expect(screen.getByLabelText(/username/i)).toBeInTheDocument()
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument()

@@ -162,25 +162,26 @@ export default function SettingsView({
           </div>
         </section>
 
-        {isAdmin && (
-          <section className="settings-card">
-            <div className="settings-header">
-              <h2>Server Path Prefix</h2>
-              <p className="muted">Shown before each relative image path without changing stored paths.</p>
-            </div>
-            <div className="settings-result">
-              <label className="control" htmlFor="display-path-prefix">
-                <span>Prefix</span>
-                <input
-                  id="display-path-prefix"
-                  type="text"
-                  className="text-input mono"
-                  value={pathPrefix}
-                  onChange={(e) => setPathPrefix(e.target.value)}
-                  placeholder="\\\\server\\share"
-                  disabled={pathPrefixLoading || pathPrefixSaving}
-                />
-              </label>
+        <section className="settings-card">
+          <div className="settings-header">
+            <h2>Server Path Prefix</h2>
+            <p className="muted">Shown before each relative image path without changing stored paths.</p>
+          </div>
+          <div className="settings-result">
+            <label className="control" htmlFor="display-path-prefix">
+              <span>Prefix</span>
+              <input
+                id="display-path-prefix"
+                type="text"
+                className="text-input mono"
+                value={pathPrefix}
+                onChange={(e) => setPathPrefix(e.target.value)}
+                placeholder="\\\\server\\share"
+                readOnly={!isAdmin}
+                disabled={pathPrefixLoading || pathPrefixSaving}
+              />
+            </label>
+            {isAdmin ? (
               <div className="settings-actions">
                 <button
                   type="button"
@@ -191,9 +192,11 @@ export default function SettingsView({
                   {pathPrefixSaving ? 'Saving…' : 'Save prefix'}
                 </button>
               </div>
-            </div>
-          </section>
-        )}
+            ) : (
+              <div className="muted">Only administrators can change this setting.</div>
+            )}
+          </div>
+        </section>
 
         <section className="settings-card">
           <div className="settings-header">

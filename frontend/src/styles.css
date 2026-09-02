@@ -141,6 +141,16 @@ button.topbar-brand {
   margin: 0;
   letter-spacing: 0.5px;
 }
+.topbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.topbar-version {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
 .topbar-subtitle {
   margin-top: var(--space-1);
   font-size: var(--text-xs);
@@ -1662,6 +1672,16 @@ input[type='checkbox'] {
   margin: 0;
   font-size: var(--text-2xl);
   letter-spacing: 0.5px;
+}
+.login-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.login-version {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 .login-subtitle {
   margin: 0;

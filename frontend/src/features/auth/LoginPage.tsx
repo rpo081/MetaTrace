@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError } from '../../api'
 import { useAuth } from './AuthContext'
 
+declare const __APP_VERSION__: string
+
 const ERROR_MESSAGES: Record<number, string> = {
   401: 'Invalid username or password.',
   423: 'Account temporarily locked. Try again later.',
@@ -46,7 +48,10 @@ export function LoginPage() {
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={onSubmit} aria-label="Sign in">
-        <h1 className="login-title">MetaTrace</h1>
+        <div className="login-title-row">
+          <h1 className="login-title">MetaTrace</h1>
+          <span className="login-version">{__APP_VERSION__}</span>
+        </div>
         <p className="muted login-subtitle">Reverse image search</p>
 
         <div className="login-form">
