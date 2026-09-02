@@ -316,7 +316,7 @@ async def login(request: Request, body: LoginRequest, response: Response):
             raise HTTPException(423, "account temporarily locked")
         else:
             # Lockout expired — reset failed attempts
-            db.record_login_success(db_path, row["id"])
+            db.clear_login_lockout(db_path, row["id"])
 
     if not verify_password(body.password, row["password_hash"]):
         db.record_login_failure(db_path, row["id"],
@@ -352,9 +352,11 @@ async def login(request: Request, body: LoginRequest, response: Response):
           ip_address=request.client.host if request.client else None,
           user_agent=request.headers.get("user-agent"))
 
+    fresh_row = db.get_user_by_id(db_path, row["id"])
+
     return LoginResponse(
         access_token=access_token,
-        user=_user_to_public(row),
+        user=_user_to_public(fresh_row if fresh_row is not None else row),
     )
 
 
@@ -437,6 +439,11 @@ async def refresh(
     if user_row is None or not user_row["is_active"]:
         log.warning("refresh failed: user_disabled user_id=%s ip=%s", new_row["user_id"] if new_row else None, request.client.host if request.client else None)
         raise _refresh_error(401, _REFRESH_UNAUTHORIZED)
+
+    db.record_login_success(db_path, user_row["id"])
+    fresh_user_row = db.get_user_by_id(db_path, user_row["id"])
+    if fresh_user_row is not None:
+        user_row = fresh_user_row
 
     access_token = create_access_token(
         user_row["id"], user_row["role"],

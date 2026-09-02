@@ -323,6 +323,14 @@ class TestLogin:
         assert body["token_type"] == "bearer"
         assert body["user"]["username"] == "testuser"
         assert body["user"]["role"] == "viewer"
+        assert body["user"]["last_login"] is not None
+        with db.connect(client.app.state.settings.db_path) as conn:
+            row = conn.execute(
+                "SELECT last_login FROM users WHERE username = ?",
+                ("testuser",),
+            ).fetchone()
+        assert row is not None
+        assert row["last_login"] == body["user"]["last_login"]
 
     def test_login_sets_refresh_cookie(self, client):
         _register_trusted_lan(client)
@@ -412,11 +420,26 @@ class TestRefresh:
         _register_trusted_lan(client)
         at, rt = _get_tokens(client)
         assert rt is not None
+        with db.connect(client.app.state.settings.db_path) as conn:
+            before = conn.execute(
+                "SELECT last_login FROM users WHERE username = ?",
+                ("testuser",),
+            ).fetchone()
+        assert before is not None
+        assert before["last_login"] is not None
         r = client.post("/api/auth/refresh", cookies={"refresh_token": rt})
         assert r.status_code == 200
         body = r.json()
         assert "access_token" in body
         assert body["token_type"] == "bearer"
+        with db.connect(client.app.state.settings.db_path) as conn:
+            after = conn.execute(
+                "SELECT last_login FROM users WHERE username = ?",
+                ("testuser",),
+            ).fetchone()
+        assert after is not None
+        assert after["last_login"] is not None
+        assert after["last_login"] >= before["last_login"]
 
     def test_refresh_rotates_token(self, client):
         _register_trusted_lan(client)
@@ -919,6 +942,32 @@ class TestAccountLockout:
         # Successful login resets counter
         r = _login(c, username="resetme", password="Good-Password-123")
         assert r.status_code == 200
+        with db.connect(settings.db_path) as conn:
+            row = conn.execute(
+                "SELECT last_login, failed_attempts, locked_until FROM users WHERE username = ?",
+                ("resetme",),
+            ).fetchone()
+        assert row is not None
+        assert row["last_login"] is not None
+        assert row["failed_attempts"] == 0
+        first_login = row["last_login"]
+
+        with db.connect(settings.db_path) as conn, conn:
+            conn.execute(
+                "UPDATE users SET failed_attempts = 5, locked_until = ? WHERE username = ?",
+                ("2000-01-01T00:00:00.000Z", "resetme"),
+            )
+
+        r = _login(c, username="resetme", password="wrong-again")
+        assert r.status_code == 401
+        with db.connect(settings.db_path) as conn:
+            row_after_failed = conn.execute(
+                "SELECT last_login, failed_attempts, locked_until FROM users WHERE username = ?",
+                ("resetme",),
+            ).fetchone()
+        assert row_after_failed is not None
+        assert row_after_failed["last_login"] == first_login
+        assert row_after_failed["failed_attempts"] == 1
         for i in range(3):
             r = _login(c, username="resetme", password=f"bad-{i}")
             assert r.status_code == 401

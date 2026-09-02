@@ -743,6 +743,21 @@ def record_login_success(db_path: Path, user_id: int) -> None:
         )
 
 
+def clear_login_lockout(db_path: Path, user_id: int) -> None:
+    """Clear an expired lockout without recording a fresh login event."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET failed_attempts = 0,
+                locked_until = NULL,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+
+
 def record_login_failure(db_path: Path, user_id: int, max_attempts: int, lockout_minutes: int) -> None:
     """Increment failed_attempts and optionally lock the account."""
     with closing(connect(db_path)) as conn, conn:
