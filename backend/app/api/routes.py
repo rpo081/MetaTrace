@@ -1,10 +1,12 @@
 """API routes."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import time
+from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
@@ -381,22 +383,47 @@ def run_store_snapshot(
     return result
 
 
-async def _read_upload(file: UploadFile | None, max_bytes: int) -> bytes | None:
+async def _read_upload(request: Request, file: UploadFile | None, max_bytes: int) -> bytes | None:
     """Read an upload in chunks, aborting as soon as the limit is exceeded."""
     if file is None or not file.filename:
         return None
+    # Early Content-Length check is intentionally NOT a strict 413 here:
+    # multipart/form-data Content-Length includes overhead (boundaries, headers)
+    # so a file of exactly max_bytes will have a request length > max_bytes.
+    # We keep a generous guard to avoid reading obviously huge bodies (e.g.
+    # > max_bytes + 5 MiB), but rely on the precise per-chunk check below for
+    # the exact limit — preserves 100% functionality for boundary tests.
+    clen = request.headers.get("content-length")
+    if clen is not None:
+        try:
+            clen_int = int(clen.strip())
+            if clen_int > max_bytes + 5 * 1024 * 1024:
+                mb = max_bytes // (1024 * 1024)
+                raise HTTPException(413, f"upload exceeds {mb} MiB limit")
+        except ValueError:
+            raise HTTPException(400, "invalid Content-Length")
     chunks: list[bytes] = []
     total = 0
-    while chunk := await file.read(UPLOAD_CHUNK_BYTES):
-        total += len(chunk)
-        if total > max_bytes:
-            mb = max_bytes // (1024 * 1024)
-            raise HTTPException(413, f"upload exceeds {mb} MiB limit")
-        chunks.append(chunk)
-    data = b"".join(chunks)
-    if not data:
-        return None
-    return data
+    try:
+        while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+            total += len(chunk)
+            if total > max_bytes:
+                mb = max_bytes // (1024 * 1024)
+                raise HTTPException(413, f"upload exceeds {mb} MiB limit")
+            chunks.append(chunk)
+        if not chunks:
+            return None
+        data = b"".join(chunks)
+        # Help GC: drop chunk list before returning (peak 2× transient reduced)
+        chunks.clear()
+        if not data:
+            return None
+        return data
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
 
 
 @router.post("/search")
@@ -423,15 +450,56 @@ async def search(
     if combine.lower() not in {"and", "or"}:
         raise HTTPException(400, "combine must be 'and' or 'or'")
 
-    data = await _read_upload(file, s.max_upload_bytes)
+    data = await _read_upload(request, file, s.max_upload_bytes)
     if data is None and (not q or not q.strip()):
         raise HTTPException(400, "Provide an image file or a text search query")
 
     try:
+        # Offload CPU-bound decode+embed (Pillow/PSD + CLIP) off the event loop
+        # so 5 concurrent searches don't block each other. Snapshot is taken
+        # inside SearchService before the expensive work, lock is not held
+        # across decode.
+        if data is not None:
+            return await asyncio.to_thread(
+                st.search.search, data, k, min_score, q, combine, _display_path_prefix(s)
+            )
         return st.search.search(data, k, min_score, q, combine, _display_path_prefix(s))
     except (ValueError, UnidentifiedImageError):
         log.warning("search upload could not be decoded", exc_info=True)
         raise HTTPException(400, "could not decode image") from None
+
+
+def _if_none_match_matches(inm: str | None, etag: str) -> bool:
+    """RFC 7232 tokenized If-None-Match check (handles W/ and comma list)."""
+    if not inm:
+        return False
+    s = inm.strip()
+    if s == "*":
+        return True
+    for token in s.split(","):
+        t = token.strip()
+        if t.lower().startswith("w/"):
+            t = t[2:].strip()
+        # exact match including quotes (our etag is quoted)
+        if t == etag:
+            return True
+        # tolerant: compare without surrounding quotes
+        if t.strip('"') == etag.strip('"') and t.strip('"'):
+            return True
+    return False
+
+
+def _if_modified_since_not_modified(ims: str | None, stat_mtime: float | None) -> bool:
+    if not ims or stat_mtime is None:
+        return False
+    try:
+        dt = parsedate_to_datetime(ims)
+        if dt is None:
+            return False
+        # HTTP dates have 1s resolution
+        return int(stat_mtime) <= int(dt.timestamp())
+    except Exception:
+        return False
 
 
 def _get_row_or_404(request: Request, image_id: int):
@@ -448,7 +516,7 @@ def thumb(
     size: int | None = Query(default=None),
     s: Settings = Depends(get_settings),
     user=Depends(require_role_with_query("admin", "editor", "viewer")),
-) -> FileResponse:
+):
     _check_rate_limit(request, "240/minute")
     st = request.app.state
     row = _get_row_or_404(request, image_id)
@@ -467,8 +535,31 @@ def thumb(
         except Exception:  # noqa: BLE001
             log.exception("thumbnail generation failed for image %s", image_id)
             raise HTTPException(500, "thumbnail generation failed") from None
-    return FileResponse(cache, media_type="image/png",
-                        headers={"Cache-Control": "private, max-age=86400"})
+    # Conditional GET: ETag from file mtime+size, Last-Modified from mtime
+    try:
+        stat = cache.stat()
+        etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        last_mod = formatdate(stat.st_mtime, usegmt=True)
+        stat_mtime = float(stat.st_mtime)
+    except OSError:
+        etag = None
+        last_mod = None
+        stat_mtime = None
+    if etag is not None:
+        inm = request.headers.get("if-none-match")
+        if _if_none_match_matches(inm, etag):
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=86400", **({"Last-Modified": last_mod} if last_mod else {})})
+        # If-Modified-Since only when no If-None-Match present (RFC 7232 §3.3)
+        if not inm:
+            ims = request.headers.get("if-modified-since")
+            if _if_modified_since_not_modified(ims, stat_mtime):
+                return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=86400", **({"Last-Modified": last_mod} if last_mod else {})})
+    headers = {"Cache-Control": "private, max-age=86400"}
+    if etag:
+        headers["ETag"] = etag
+    if last_mod:
+        headers["Last-Modified"] = last_mod
+    return FileResponse(cache, media_type="image/png", headers=headers)
 
 
 @router.get("/file/{image_id}")
@@ -477,7 +568,7 @@ def original_file(
     image_id: int,
     s: Settings = Depends(get_settings),
     user=Depends(require_role_with_query("admin", "editor", "viewer")),
-) -> FileResponse:
+):
     _check_rate_limit(request, "30/minute")
     row = _get_row_or_404(request, image_id)
     rel = getattr(row, "rel_path", row["rel_path"])  # DTO guard
@@ -490,12 +581,43 @@ def original_file(
     raw_name = Path(rel).name
     safe_name = _sanitize_filename(raw_name) or f"image-{image_id}"
     quoted = _quote(safe_name, safe="")
+    # Conditional GET: ETag from sha256 (stable) else mtime+size
+    sha_val = getattr(row, "sha256", row["sha256"] if isinstance(row, dict) else None) if hasattr(row, "__getitem__") or hasattr(row, "sha256") else None  # type: ignore
+    try:
+        sha = sha_val if isinstance(sha_val, str) and sha_val else None
+    except Exception:
+        sha = None
+    try:
+        stat = src.stat()
+        last_mod = formatdate(stat.st_mtime, usegmt=True)
+        stat_mtime = float(stat.st_mtime)
+        if sha:
+            etag = f'"{sha}"'
+        else:
+            etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+    except OSError:
+        etag = f'"{sha}"' if sha else None
+        last_mod = None
+        stat_mtime = None
+    if etag is not None:
+        inm = request.headers.get("if-none-match")
+        if _if_none_match_matches(inm, etag):
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=86400", **({"Last-Modified": last_mod} if last_mod else {})})
+        if not inm:
+            ims = request.headers.get("if-modified-since")
+            if _if_modified_since_not_modified(ims, stat_mtime):
+                return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=86400", **({"Last-Modified": last_mod} if last_mod else {})})
+    headers = {
+        "Content-Disposition": f'inline; filename="{safe_name}"; filename*=UTF-8\'\'{quoted}',
+        "Cache-Control": "private, max-age=86400",
+    }
+    if etag:
+        headers["ETag"] = etag
+    if last_mod:
+        headers["Last-Modified"] = last_mod
     return FileResponse(
         src,
-        headers={
-            "Content-Disposition": f'inline; filename="{safe_name}"; filename*=UTF-8\'\'{quoted}',
-            "Cache-Control": "private, max-age=86400",
-        },
+        headers=headers,
     )
 
 

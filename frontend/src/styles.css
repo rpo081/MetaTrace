@@ -856,6 +856,12 @@ input[type='checkbox'] {
   cursor: pointer;
   box-shadow: var(--shadow-1);
   transition: border-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+  /* memory/perf: defer offscreen card rendering (60 cards/page ×5 users) */
+  content-visibility: auto;
+  contain-intrinsic-size: 280px 300px;
+}
+.auth-image-placeholder {
+  min-height: 100px;
 }
 .card:hover {
   border-color: var(--accent);
@@ -1282,6 +1288,8 @@ input[type='checkbox'] {
 }
 .result-list-item {
   min-width: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 120px 96px;
 }
 .list-row {
   appearance: none;
