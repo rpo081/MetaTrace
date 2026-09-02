@@ -1,0 +1,36 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "skill": {
+      "*": "ask"
+    }
+  },
+  "subagent_depth": 2,
+  "experimental": {
+    "continue_loop_on_deny": true
+  },
+  "agent": {
+    "explore": {
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "bash": {
+          "*": "deny",
+          "ls *": "allow",
+          "find *": "allow",
+          "cat *": "allow",
+          "rg *": "allow",
+          "git log*": "allow",
+          "git diff*": "allow",
+          "git status*": "allow",
+          "git show*": "allow",
+          "git branch*": "allow"
+        },
+        "skill": "deny",
+        "webfetch": "allow",
+        "websearch": "allow"
+      }
+    }
+  }
+}
