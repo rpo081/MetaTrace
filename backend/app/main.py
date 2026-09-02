@@ -48,7 +48,7 @@ class _TokenRedactFilter(logging.Filter):
             pass
         return True
 
-from . import db
+from . import db, embeddings
 from .api.routes import router
 from .api.auth import router as auth_router
 from .api.users import router as users_router
@@ -228,6 +228,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         scheduler = ScanScheduler(indexer)
         app.state.scheduler = scheduler
+        if settings.preload_model_on_start:
+            log.info("preloading embedding model before serving requests")
+            embeddings.get_model(settings)
         if settings.run_initial_scan_on_start and indexer.count == 0 and _store_has_files(settings):
             log.info("empty index detected; starting initial scan of %s", settings.store_path)
             scheduler.trigger_now()

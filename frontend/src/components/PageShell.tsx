@@ -330,7 +330,7 @@ export default function PageShell({
         </div>
       </header>
 
-      {stats?.last_report && <ScanReportLine report={stats.last_report} state={stats.state} />}
+      {scanActive && stats?.last_report && <ScanReportLine report={stats.last_report} state={stats.state} />}
       {fullRescanNoticeActive && (
         <div className="global-notice-wrap">
           <div className="warning-box" role="status" aria-live="polite">

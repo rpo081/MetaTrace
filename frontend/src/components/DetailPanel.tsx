@@ -113,7 +113,7 @@ export default function DetailPanel({ result, onClose }: Props) {
       <div className="detail-section">
         <div className="kv">
           <span className="k">File</span>
-          <span className="v mono selectable">{result.rel_path}</span>
+          <span className="v mono selectable">{toWindowsPath(result.original_path)}</span>
         </div>
         <div className="kv">
           <span className="k">Original path</span>

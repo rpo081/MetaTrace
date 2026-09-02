@@ -42,7 +42,8 @@ COPY --chmod=755 backend/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 ENV STORE_PATH=/store \
     DATA_PATH=/data \
-  HF_HUB_OFFLINE=1 \
+    HF_HUB_OFFLINE=1 \
+    PRELOAD_MODEL_ON_START=true \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8000

@@ -12,11 +12,11 @@ class SearchService:
         self.settings = settings
 
     @staticmethod
-    def _result_from_row(row, *, score: float, exact: bool, source: str) -> dict:
+    def _result_from_row(row, *, score: float, exact: bool, source: str, path_prefix: str = "") -> dict:
         # Compile guard: row is ImageDTO (attribute access), not sqlite3.Row
         row_id = getattr(row, "id", row["id"])  # type: ignore[index]
         return {
-            **db.row_to_result(row),
+            **db.row_to_result(row, path_prefix),
             "score": round(float(score), 4),
             "exact": exact,
             "source": source,
@@ -24,17 +24,17 @@ class SearchService:
             "file_url": f"/api/file/{row_id}",
         }
 
-    def _text_results(self, q: str, k: int) -> list[dict]:
+    def _text_results(self, q: str, k: int, path_prefix: str = "") -> list[dict]:
         rows = db.search_by_text(self.settings.db_path, q, limit=k)
         return [
-            self._result_from_row(row, score=1.0, exact=False, source="text")
+            self._result_from_row(row, score=1.0, exact=False, source="text", path_prefix=path_prefix)
             for row in rows
         ]
 
     # Cap for image+text AND fan-out to prevent OOM on 200k-scale indexes.
     MAX_SEARCH_FETCH = 5000
 
-    def _image_results(self, image_bytes: bytes, k: int, min_score: float, q: str | None = None) -> tuple[int, bool, list[dict]]:
+    def _image_results(self, image_bytes: bytes, k: int, min_score: float, q: str | None = None, path_prefix: str = "") -> tuple[int, bool, list[dict]]:
         s = self.settings
 
         # Single snapshot before embedding: hold lock only to capture (index, ntotal)
@@ -77,7 +77,9 @@ class SearchService:
             if q and not db.matches_text(row, q):
                 continue
             seen_ids.add(int(sid))
-            item = self._result_from_row(row, score=float(score), exact=False, source="image")
+            item = self._result_from_row(
+                row, score=float(score), exact=False, source="image", path_prefix=path_prefix,
+            )
             sha_val = getattr(row, "sha256", row["sha256"] if isinstance(row, dict) else None)  # type: ignore[index]
             if sha_val and sha_val == sha and exact_hit is None:
                 item["exact"] = True
@@ -124,6 +126,7 @@ class SearchService:
         min_score: float = 0.0,
         q: str | None = None,
         combine: str = "and",
+        path_prefix: str = "",
     ) -> dict:
         q_clean = q.strip() if q and q.strip() else None
         combine_mode = combine.lower()
@@ -137,7 +140,7 @@ class SearchService:
             return {
                 "total_indexed": total,
                 "exact_match": False,
-                "results": self._text_results(q_clean, k),
+                "results": self._text_results(q_clean, k, path_prefix),
             }
 
         total, exact_match, image_results = self._image_results(
@@ -145,6 +148,7 @@ class SearchService:
             k,
             min_score,
             q_clean if combine_mode == "and" else None,
+            path_prefix,
         )
 
         if not q_clean:
@@ -163,7 +167,7 @@ class SearchService:
                 "results": image_results,
             }
 
-        text_results = self._text_results(q_clean, k)
+        text_results = self._text_results(q_clean, k, path_prefix)
         return {
             "total_indexed": total,
             "exact_match": exact_match,

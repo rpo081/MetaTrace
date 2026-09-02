@@ -115,6 +115,26 @@ export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaR
   return res.json()
 }
 
+export interface DisplayPathPrefixSettings {
+  prefix: string
+}
+
+export async function getDisplayPathPrefix(signal?: AbortSignal): Promise<DisplayPathPrefixSettings> {
+  const res = await fetchWithAuth('/api/settings/display-path-prefix', { signal })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+
+export async function updateDisplayPathPrefix(prefix: string): Promise<DisplayPathPrefixSettings> {
+  const res = await fetchWithAuth('/api/settings/display-path-prefix', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefix }),
+  })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+
 export interface BrowseParams {
   offset?: number
   limit?: number

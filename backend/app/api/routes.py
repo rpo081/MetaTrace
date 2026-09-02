@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pydantic import BaseModel, Field
 from .. import db, embeddings, metadata, store_snapshot
 from ..config import Settings
 from ..dependencies import get_settings, require_role, require_role_with_query
@@ -25,6 +26,15 @@ router = APIRouter(prefix="/api")
 # Chunk size for streamed upload reads (1 MiB) — bounds memory use and lets us
 # abort oversized uploads before the whole body has been consumed.
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+PATH_PREFIX_KEY = "display_path_prefix"
+
+
+class DisplayPathPrefixUpdate(BaseModel):
+    prefix: str = Field(max_length=4096)
+
+
+def _display_path_prefix(settings: Settings) -> str:
+    return db.kv_get(settings.db_path, PATH_PREFIX_KEY) or ""
 
 
 def _snapshot_scan_root_payload(request: Request) -> dict:
@@ -266,7 +276,7 @@ def browse_images(
     )
     items = []
     for row in rows:
-        item = db.row_to_result(row)
+        item = db.row_to_result(row, _display_path_prefix(s))
         # DTO guard: attribute access
         item["size"] = getattr(row, "size", row["size"])
         item["mtime"] = getattr(row, "mtime", row["mtime"])
@@ -311,6 +321,29 @@ def get_store_snapshot_settings(
 ) -> dict:
     _check_rate_limit(request, "30/minute")
     return _snapshot_scan_root_payload(request)
+
+
+@router.get("/settings/display-path-prefix")
+def get_display_path_prefix(
+    request: Request,
+    s: Settings = Depends(get_settings),
+    user=Depends(require_role("admin", "editor", "viewer")),
+) -> dict:
+    _check_rate_limit(request, "30/minute")
+    return {"prefix": _display_path_prefix(s)}
+
+
+@router.put("/settings/display-path-prefix")
+def update_display_path_prefix(
+    payload: DisplayPathPrefixUpdate,
+    request: Request,
+    s: Settings = Depends(get_settings),
+    user=Depends(require_role("admin")),
+) -> dict:
+    _check_rate_limit(request, "10/minute")
+    prefix = payload.prefix.strip()
+    db.kv_set(s.db_path, PATH_PREFIX_KEY, prefix)
+    return {"prefix": prefix}
 
 
 @router.post("/settings/store-snapshot/run")
@@ -388,7 +421,7 @@ async def search(
         raise HTTPException(400, "Provide an image file or a text search query")
 
     try:
-        return st.search.search(data, k, min_score, q, combine)
+        return st.search.search(data, k, min_score, q, combine, _display_path_prefix(s))
     except (ValueError, UnidentifiedImageError):
         log.warning("search upload could not be decoded", exc_info=True)
         raise HTTPException(400, "could not decode image") from None

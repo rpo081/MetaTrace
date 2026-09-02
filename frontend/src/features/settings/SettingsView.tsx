@@ -4,12 +4,13 @@
  *  from the settings page. Full-rescan modal lifecycle (refs, focus trap,
  *  esc) stays in PageShell — we only call openFullRescanModal().
  */
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { RescanDeltaResponse, Stats } from '../../types'
 import ScanReportLine, { getReportRates } from '../../components/ScanReportLine'
 import { ChangePasswordModal } from '../auth/ChangePasswordModal'
 import { UserManagementSection } from '../auth/UserManagementSection'
 import { useAuth } from '../auth/AuthContext'
+import { getDisplayPathPrefix, updateDisplayPathPrefix } from '../../api'
 
 function fmtRate(val: number | undefined): string {
   if (val == null || val <= 0) return '0'
@@ -106,6 +107,19 @@ export default function SettingsView({
 }: Props) {
   const { state } = useAuth()
   const [showPw, setShowPw] = useState(false)
+  const [pathPrefix, setPathPrefix] = useState('')
+  const [pathPrefixLoading, setPathPrefixLoading] = useState(true)
+  const [pathPrefixSaving, setPathPrefixSaving] = useState(false)
+  const isAdmin = state.user?.role === 'admin'
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void getDisplayPathPrefix(controller.signal)
+      .then(({ prefix }) => setPathPrefix(prefix))
+      .catch(() => {})
+      .finally(() => setPathPrefixLoading(false))
+    return () => controller.abort()
+  }, [])
 
   const closePw = useCallback(() => {
     setShowPw(false)
@@ -115,6 +129,18 @@ export default function SettingsView({
     setShowPw(false)
     onGlobalNotice?.('Password updated. Other sessions were signed out.')
   }, [onGlobalNotice])
+
+  const savePathPrefix = useCallback(async () => {
+    setPathPrefixSaving(true)
+    try {
+      await updateDisplayPathPrefix(pathPrefix)
+      window.location.reload()
+    } catch (e) {
+      onGlobalNotice?.(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPathPrefixSaving(false)
+    }
+  }, [onGlobalNotice, pathPrefix])
 
   return (
     <main id="main-content" className="settings-view">
@@ -135,6 +161,39 @@ export default function SettingsView({
             {stats?.last_scan && <div className="summary-row muted">Last scan: {stats.last_scan}</div>}
           </div>
         </section>
+
+        {isAdmin && (
+          <section className="settings-card">
+            <div className="settings-header">
+              <h2>Server Path Prefix</h2>
+              <p className="muted">Shown before each relative image path without changing stored paths.</p>
+            </div>
+            <div className="settings-result">
+              <label className="control" htmlFor="display-path-prefix">
+                <span>Prefix</span>
+                <input
+                  id="display-path-prefix"
+                  type="text"
+                  className="text-input mono"
+                  value={pathPrefix}
+                  onChange={(e) => setPathPrefix(e.target.value)}
+                  placeholder="\\\\server\\share"
+                  disabled={pathPrefixLoading || pathPrefixSaving}
+                />
+              </label>
+              <div className="settings-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void savePathPrefix()}
+                  disabled={pathPrefixLoading || pathPrefixSaving}
+                >
+                  {pathPrefixSaving ? 'Saving…' : 'Save prefix'}
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="settings-card">
           <div className="settings-header">

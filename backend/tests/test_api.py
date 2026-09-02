@@ -177,6 +177,21 @@ def test_store_snapshot_settings_defaults_to_install_path(client):
     assert body["source"] == "store_path"
 
 
+def test_display_path_prefix_updates_visible_paths_not_file_access(client):
+    assert client.get("/api/settings/display-path-prefix").json() == {"prefix": ""}
+
+    updated = client.put(
+        "/api/settings/display-path-prefix",
+        json={"prefix": r"\\server\renderings"},
+    )
+    assert updated.status_code == 200
+    assert updated.json() == {"prefix": r"\\server\renderings"}
+
+    result = client.get("/api/images").json()["items"][0]
+    assert result["original_path"] == r"\\server\renderings\x.png"
+    assert client.get(f"/api/file/{result['id']}").status_code == 200
+
+
 def test_store_snapshot_settings_report_env_root(tmp_path, monkeypatch):
     app, settings = _minimal_app(
         tmp_path,

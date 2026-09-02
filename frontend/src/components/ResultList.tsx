@@ -89,8 +89,8 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
                 <div className="list-name" title={r.rel_path}>
                   {basename(r.rel_path)}
                 </div>
-                <div className="list-path mono" title={r.rel_path}>
-                  {r.rel_path}
+                <div className="list-path mono" title={r.original_path}>
+                  {r.original_path}
                 </div>
                 <div className="list-details muted">
                   {dims && <span>{dims}</span>}

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     decode_prefetch: int = 16
 
     run_initial_scan_on_start: bool = True
+    preload_model_on_start: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("METATRACE_PRELOAD_MODEL_ON_START", "PRELOAD_MODEL_ON_START"),
+        description="Load the embedding model before the API reports ready.",
+    )
     use_store_snapshot_for_initial_scan: bool = True
     snapshot_scan_root: Path | None = Field(
         default=None,

@@ -153,6 +153,13 @@ def test_update_original_paths(tmp_path):
     assert r3["original_path"] == r"\\other\share\c\z.png"  # untouched
 
 
+def test_display_path_uses_prefix_without_changing_stored_path():
+    stored_path = "renders/final.png"
+
+    assert db.display_path("renders/final.png", stored_path) == stored_path
+    assert db.display_path("renders/final.png", stored_path, r"\\nas\images") == r"\\nas\images\renders\final.png"
+
+
 def test_update_original_paths_idempotent(tmp_path):
     p = tmp_path / "idemp.db"
     db.init_db(p)

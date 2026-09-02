@@ -281,7 +281,15 @@ def kv_set(db_path: Path, key: str, value: str) -> None:
         )
 
 
-def row_to_result(row) -> dict:
+def display_path(rel_path: str, stored_path: str, path_prefix: str = "") -> str:
+    """Return the user-facing image path without changing the stored source path."""
+    prefix = path_prefix.strip().rstrip("/\\")
+    if not prefix:
+        return stored_path
+    return f"{prefix}\\{rel_path.replace('/', '\\')}"
+
+
+def row_to_result(row, path_prefix: str = "") -> dict:
     """Accept ImageDTO or sqlite3.Row and return API-safe dict."""
     # DTO has attributes, Row has mapping
     def _get(key):
@@ -312,7 +320,7 @@ def row_to_result(row) -> dict:
     return {
         "id": rid,
         "rel_path": rel,
-        "original_path": orig,
+        "original_path": display_path(rel, orig, path_prefix),
         "width": width,
         "height": height,
         "xmp": xmp,
