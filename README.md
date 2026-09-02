@@ -275,6 +275,10 @@ Environment variables (or `.env`, see `.env.example`):
 | `METATRACE_TRUSTED_PROXY` | `false` | when `true`, rate limiting trusts `X-Forwarded-For` / `X-Real-IP` (behind nginx/traefik). Leave `false` to avoid spoofing when not behind proxy |
 | `METATRACE_JWT_SECRET` | — | HS256 signing secret for access tokens. **Required when running internet-facing.** Min 32 chars. Generate with `python -c "import secrets; print(secrets.token_urlsafe(64))"`. Unset = single-server trusted-LAN mode (X-Admin-Token + open registration) |
 | `THUMBS_MAX_FILES` / `METATRACE_THUMBS_MAX_FILES` | `100000` | max thumbnails before LRU eviction (`0`=unbounded); 100k ≈5 GB at 256 px |
+| `IDLE_THUMBNAILS_ENABLED` / `METATRACE_IDLE_THUMBNAILS_ENABLED` | `true` | generate missing default-size thumbnails in the background while scans and foreground image requests are idle |
+| `IDLE_THUMBNAIL_GRACE_SEC` / `METATRACE_IDLE_THUMBNAIL_GRACE_SEC` | `15` | quiet period after foreground activity before background generation starts |
+| `IDLE_THUMBNAIL_DELAY_MS` / `METATRACE_IDLE_THUMBNAIL_DELAY_MS` | `300` | delay between background thumbnails (`0` disables throttling) |
+| `IDLE_THUMBNAIL_QUERY_BATCH` / `METATRACE_IDLE_THUMBNAIL_QUERY_BATCH` | `100` | newest-first database keyset page size |
 | `SNAPSHOT_MAX_AGE_HOURS` / `METATRACE_SNAPSHOT_MAX_AGE_HOURS` | `24` | store snapshot staleness threshold (`0`=never stale); stale triggers filesystem walk |
 | `MAX_BROWSE_LIMIT` | `200` | max `limit` for `GET /api/images` (capped on server) |
 | `METATRACE_COOKIE_SECURE` | `auto` | `Secure` flag on auth cookies: `auto`= `https`→Secure, `http`→not (default, works for local dev); `true`/`false` to force. When `METATRACE_TRUSTED_PROXY=true`, `X-Forwarded-Proto`/`Forwarded` `proto=https` is honoured so TLS-terminating proxies still get Secure |
@@ -313,7 +317,7 @@ Environment variables (or `.env`, see `.env.example`):
   published periodically (`PUBLISH_INTERVAL_SEC`). On CUDA, embedding runs in
   fp16 autocast (float32 output) with TF32 matmuls enabled.
 - Query cost is independent of source resolution (CLIP consumes 224 px inputs).
-- Thumbnails are generated once per `(id, size)` and served from disk cache. The UI currently uses 256 px for result cards and 512 px for the detail panel.
+- Thumbnails are generated once per `(id, size)` and served from disk cache. The UI currently uses 256 px for result cards and 512 px for the detail panel. While scans and foreground image requests are idle, one low-priority worker pre-generates missing 256 px thumbnails newest-first. It stops at `THUMBS_MAX_FILES`; only foreground requests may evict older entries after the cap is reached.
 
 ## Implementation notes & trade-offs
 

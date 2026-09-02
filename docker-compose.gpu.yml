@@ -18,6 +18,12 @@ services:
       BATCH_SIZE: ${BATCH_SIZE:-64}
       DECODE_WORKERS: ${DECODE_WORKERS:-4}
       DECODE_PREFETCH: ${DECODE_PREFETCH:-16}
+      THUMBS_MAX_FILES: ${THUMBS_MAX_FILES:-100000}
+      # Generate newest missing 256px thumbnails only while foreground work is idle.
+      IDLE_THUMBNAILS_ENABLED: ${IDLE_THUMBNAILS_ENABLED:-true}
+      IDLE_THUMBNAIL_GRACE_SEC: ${IDLE_THUMBNAIL_GRACE_SEC:-15}
+      IDLE_THUMBNAIL_DELAY_MS: ${IDLE_THUMBNAIL_DELAY_MS:-300}
+      IDLE_THUMBNAIL_QUERY_BATCH: ${IDLE_THUMBNAIL_QUERY_BATCH:-100}
       # PSD composite pixel cap (OOM guard for huge renders).
       METATRACE_MAX_PIXELS: ${METATRACE_MAX_PIXELS:-100000000}
       # Auth: legacy admin token (must be >=32 chars if set) + JWT. Empty admin_token + ALLOW_UNAUTH=false => 401 on mutations (not open).

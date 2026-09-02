@@ -75,6 +75,26 @@ class Settings(BaseSettings):
         ge=0,
         description="Max cached thumbnails before LRU eviction (0=unbounded). 100k ≈5GB at 256px.",
     )
+    idle_thumbnails_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("METATRACE_IDLE_THUMBNAILS_ENABLED", "IDLE_THUMBNAILS_ENABLED"),
+    )
+    idle_thumbnail_grace_sec: float = Field(
+        default=15.0,
+        validation_alias=AliasChoices("METATRACE_IDLE_THUMBNAIL_GRACE_SEC", "IDLE_THUMBNAIL_GRACE_SEC"),
+        ge=0,
+    )
+    idle_thumbnail_delay_ms: int = Field(
+        default=300,
+        validation_alias=AliasChoices("METATRACE_IDLE_THUMBNAIL_DELAY_MS", "IDLE_THUMBNAIL_DELAY_MS"),
+        ge=0,
+    )
+    idle_thumbnail_query_batch: int = Field(
+        default=100,
+        validation_alias=AliasChoices("METATRACE_IDLE_THUMBNAIL_QUERY_BATCH", "IDLE_THUMBNAIL_QUERY_BATCH"),
+        ge=1,
+        le=1000,
+    )
     snapshot_max_age_hours: int = Field(
         default=24,
         validation_alias=AliasChoices("METATRACE_SNAPSHOT_MAX_AGE_HOURS", "SNAPSHOT_MAX_AGE_HOURS"),

@@ -57,7 +57,7 @@ from .config import Settings
 from .indexer import Indexer
 from .scheduler import ScanScheduler
 from .search import SearchService
-from .thumbs import cleanup_orphan_thumb_temps, prune_thumb_cache
+from .thumbs import IdleThumbnailWorker, cleanup_orphan_thumb_temps, prune_thumb_cache
 
 log = logging.getLogger("metatrace")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -234,9 +234,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.run_initial_scan_on_start and indexer.count == 0 and _store_has_files(settings):
             log.info("empty index detected; starting initial scan of %s", settings.store_path)
             scheduler.trigger_now()
+        thumbnail_worker = IdleThumbnailWorker(settings, indexer)
+        app.state.thumbnail_worker = thumbnail_worker
+        thumbnail_worker.start()
         log.info("MetaTrace ready (indexed=%d, model=%s:%s)",
                  indexer.count, settings.model_name, settings.model_pretrained)
         yield
+        thumbnail_worker.stop()
         scheduler.stop()
 
     app = FastAPI(title="MetaTrace", version="0.1.0", lifespan=lifespan)
@@ -266,6 +270,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         log.info("CORS disabled (same-origin SPA); set METATRACE_CORS_ORIGINS to enable")
 
     app.add_middleware(SlowAPIMiddleware)
+
+    @app.middleware("http")
+    async def foreground_activity(request, call_next):
+        path = request.url.path
+        tracked = (
+            path == "/api/search"
+            or path == "/api/images"
+            or path.startswith("/api/thumb/")
+            or path.startswith("/api/file/")
+        )
+        worker = getattr(request.app.state, "thumbnail_worker", None)
+        if tracked and worker is not None:
+            worker.begin_foreground()
+        try:
+            return await call_next(request)
+        finally:
+            if tracked and worker is not None:
+                worker.end_foreground()
 
     @app.middleware("http")
     async def security_headers(request, call_next):

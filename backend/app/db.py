@@ -84,6 +84,13 @@ class Entry:
     mtime: float
 
 
+@dataclass(frozen=True)
+class ThumbnailCandidate:
+    id: int
+    rel_path: str
+    indexed_at: str
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -132,6 +139,37 @@ def list_entries(db_path: Path) -> dict[str, Entry]:
     with closing(connect(db_path)) as conn:
         rows = conn.execute("SELECT id, rel_path, size, mtime FROM images").fetchall()
     return {r["rel_path"]: Entry(r["id"], r["rel_path"], r["size"], r["mtime"]) for r in rows}
+
+
+def newest_thumbnail_candidates(
+    db_path: Path,
+    *,
+    limit: int,
+    before: tuple[str, int] | None = None,
+) -> list[ThumbnailCandidate]:
+    """Return a newest-first keyset page for idle thumbnail generation."""
+    where = ""
+    params: list[object] = []
+    if before is not None:
+        indexed_at, image_id = before
+        where = "WHERE indexed_at < ? OR (indexed_at = ? AND id < ?)"
+        params.extend((indexed_at, indexed_at, image_id))
+    params.append(max(1, limit))
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, rel_path, indexed_at
+            FROM images
+            {where}
+            ORDER BY indexed_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [
+        ThumbnailCandidate(int(row["id"]), str(row["rel_path"]), str(row["indexed_at"]))
+        for row in rows
+    ]
 
 
 def upsert_image(

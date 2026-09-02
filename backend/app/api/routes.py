@@ -4,20 +4,18 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import UnidentifiedImageError
 from pydantic import BaseModel, Field
 from .. import db, embeddings, metadata, store_snapshot
 from ..config import Settings
 from ..dependencies import get_settings, require_role, require_role_with_query
 from ..rate_limit import check_rate_limit as _check_rate_limit
-from ..thumbs import prune_thumb_cache as _prune_thumb_cache
-from ..thumbs import unlink_quiet as _unlink_quiet
+from ..thumbs import generate_thumbnail
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +178,7 @@ def stats(
     st = request.app.state
     snap_age, snap_stale = _snapshot_age_sec(s)
     thumbs_count, thumbs_mb = _thumbs_stats(s)
+    thumbnail_worker = getattr(st, "thumbnail_worker", None)
     return {
         "indexed": st.indexer.count,
         "db_count": db.count(s.db_path),
@@ -193,6 +192,7 @@ def stats(
         "thumbs_count": thumbs_count,
         "thumbs_size_mb": thumbs_mb,
         "thumbs_max_files": s.thumbs_max_files,
+        "idle_thumbnails": thumbnail_worker.snapshot() if thumbnail_worker is not None else None,
         "state": st.indexer.status["state"],
         "last_report": st.indexer.status["last_report"],
         "inventory_source": st.indexer.status.get("inventory_source"),
@@ -454,28 +454,7 @@ def thumb(
         if not src.exists():
             raise HTTPException(404, "source file missing from store")
         try:
-            try:
-                with Image.open(src) as original:
-                    img = ImageOps.exif_transpose(original)
-                    if "A" in img.getbands():
-                        img = img.convert("RGBA")
-                    else:
-                        img = img.convert("RGB")
-            except UnidentifiedImageError:
-                # PSDs Pillow cannot open still use the existing psd-tools fallback.
-                img = embeddings.decode_image(src)
-            img.thumbnail((side, side))
-            # Write to a unique temp name next to the cache, then atomically
-            # replace so concurrent requests never serve a partial PNG.
-            fd, tmp_name = tempfile.mkstemp(dir=s.thumbs_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    img.save(fh, "PNG", optimize=True)
-                os.replace(tmp_name, cache)
-                _prune_thumb_cache(s)
-            except Exception:
-                _unlink_quiet(tmp_name)
-                raise
+            cache = generate_thumbnail(s, image_id, src, side)
         except HTTPException:
             raise
         except Exception:  # noqa: BLE001

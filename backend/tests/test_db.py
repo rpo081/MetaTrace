@@ -160,6 +160,37 @@ def test_display_path_uses_prefix_without_changing_stored_path():
     assert db.display_path("renders/final.png", stored_path, r"\\nas\images") == r"\\nas\images\renders\final.png"
 
 
+def test_newest_thumbnail_candidates_use_keyset_pagination(tmp_path):
+    db_path = tmp_path / "meta.db"
+    db.init_db(db_path)
+    for rel_path in ("old.png", "middle.png", "new.png"):
+        db.upsert_image(
+            db_path,
+            rel_path=rel_path,
+            original_path=rel_path,
+            size=1,
+            mtime=1,
+            sha256=None,
+            width=1,
+            height=1,
+            xmp={},
+        )
+    with db.connect(db_path) as conn, conn:
+        conn.execute("UPDATE images SET indexed_at = '2026-01-01T00:00:00Z' WHERE rel_path = 'old.png'")
+        conn.execute("UPDATE images SET indexed_at = '2026-02-01T00:00:00Z' WHERE rel_path = 'middle.png'")
+        conn.execute("UPDATE images SET indexed_at = '2026-03-01T00:00:00Z' WHERE rel_path = 'new.png'")
+
+    first = db.newest_thumbnail_candidates(db_path, limit=2)
+    second = db.newest_thumbnail_candidates(
+        db_path,
+        limit=2,
+        before=(first[-1].indexed_at, first[-1].id),
+    )
+
+    assert [item.rel_path for item in first] == ["new.png", "middle.png"]
+    assert [item.rel_path for item in second] == ["old.png"]
+
+
 def test_update_original_paths_idempotent(tmp_path):
     p = tmp_path / "idemp.db"
     db.init_db(p)
