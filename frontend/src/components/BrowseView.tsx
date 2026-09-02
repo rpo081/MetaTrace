@@ -31,7 +31,7 @@ const SORT_OPTIONS: Array<{ value: BrowseSort; label: string }> = [
 export default function BrowseView() {
   const [filters, setFilters] = useState<BrowseFilters>({})
   const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode(BROWSE_VIEW_MODE_KEY))
-  const [sort, setSort] = useState<BrowseSort>('indexed_at')
+  const [sort, setSort] = useState<BrowseSort>('mtime')
   const [order, setOrder] = useState<BrowseOrder>('desc')
   const [offset, setOffset] = useState(0)
   const limit = 60

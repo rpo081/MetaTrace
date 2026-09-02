@@ -15,7 +15,7 @@ describe('BrowseView', () => {
     render(<BrowseView />)
     await waitFor(() => expect(browseImages).toHaveBeenCalled())
     const call = (browseImages as any).mock.calls[0][0]
-    expect(call).toMatchObject({ offset: 0, limit: 60, sort: 'indexed_at', order: 'desc' })
+    expect(call).toMatchObject({ offset: 0, limit: 60, sort: 'mtime', order: 'desc' })
   })
 
   it('shows placeholder when no results', async () => {

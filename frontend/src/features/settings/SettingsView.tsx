@@ -18,6 +18,12 @@ function fmtRate(val: number | undefined): string {
   return `${Math.round(val * 10) / 10}`
 }
 
+function fmtThumbCap(val: number | undefined): string {
+  if (val == null) return 'n/a'
+  if (val <= 0) return 'unbounded'
+  return `${val}`
+}
+
 function DeltaInfo({
   delta,
   onRescanWithDelta,
@@ -155,6 +161,7 @@ export default function SettingsView({
             <div className="summary-grid">
               <span className="summary-chip">Model: {stats?.model ?? 'unknown'}</span>
               <span className="summary-chip">Indexed: {stats?.indexed ?? 0}</span>
+              <span className="summary-chip">Thumbnails: {stats?.thumbs_count ?? 0} / {fmtThumbCap(stats?.thumbs_max_files)}</span>
               <span className="summary-chip">Upload limit: {stats?.max_upload_mb ?? 'n/a'} MiB</span>
               <span className="summary-chip">ExifTool: {stats?.exiftool ? 'available' : 'missing'}</span>
             </div>
