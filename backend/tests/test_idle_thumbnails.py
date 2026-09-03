@@ -234,3 +234,18 @@ def test_prune_thumb_cache_waits_for_buffer_then_prunes_back_to_cap(tmp_path):
     fourth.write_bytes(b"d")
     assert thumbs.prune_thumb_cache(settings) == 2
     assert sum(1 for _ in settings.thumbs_dir.glob("*.png")) == 2
+
+
+def test_prune_thumb_cache_keeps_256_and_512_limits_separate(tmp_path):
+    settings, _, _ = _environment(tmp_path, max_files=1)
+    settings.detail_thumbs_max_files = 2
+    settings.thumbs_prune_buffer = 0
+    (settings.thumbs_dir / "1_256.png").write_bytes(b"a")
+    (settings.thumbs_dir / "2_256.png").write_bytes(b"b")
+    (settings.thumbs_dir / "3_512.png").write_bytes(b"c")
+    (settings.thumbs_dir / "4_512.png").write_bytes(b"d")
+    (settings.thumbs_dir / "5_512.png").write_bytes(b"e")
+
+    assert thumbs.prune_thumb_cache(settings, side=512) == 1
+    assert sum(1 for _ in settings.thumbs_dir.glob("*_256.png")) == 2
+    assert sum(1 for _ in settings.thumbs_dir.glob("*_512.png")) == 2

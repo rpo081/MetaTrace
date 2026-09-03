@@ -121,6 +121,16 @@ export async function stopBulkThumbnails(): Promise<{ stopped: boolean }> {
   return res.json()
 }
 
+export async function prewarmThumbnails(ids: number[], size = 512): Promise<{ queued: number; size: number }> {
+  const res = await fetchWithAuth('/api/thumbnails/prewarm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, size }),
+  })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+
 export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaResponse> {
   const res = await fetchWithAuth('/api/rescan-delta', { signal })
   if (!res.ok) await parseError(res)

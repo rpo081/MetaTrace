@@ -456,6 +456,22 @@ def test_bulk_thumbnail_route_conflicts(client, monkeypatch):
     assert stopped.status_code == 409
 
 
+def test_prewarm_thumbnail_route(client, monkeypatch):
+    calls = []
+
+    def replace_queue(ids, *, side):
+        calls.append((ids, side))
+        return len(ids)
+
+    monkeypatch.setattr(client.app.state.prewarm_thumbnail_worker, "replace_queue", replace_queue)
+
+    response = client.post("/api/thumbnails/prewarm", json={"ids": [3, 1, 2], "size": 512})
+
+    assert response.status_code == 202
+    assert response.json() == {"queued": 3, "size": 512}
+    assert calls == [([3, 1, 2], 512)]
+
+
 def test_stats_include_bulk_thumbnail_snapshot(client, monkeypatch):
     monkeypatch.setattr(
         client.app.state.bulk_thumbnail_worker,
@@ -468,6 +484,20 @@ def test_stats_include_bulk_thumbnail_snapshot(client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["bulk_thumbnails"]["workers"] == 6
     assert response.json()["bulk_thumbnails"]["state"] == "running"
+
+
+def test_stats_include_prewarm_snapshot_and_detail_cap(client, monkeypatch):
+    monkeypatch.setattr(
+        client.app.state.prewarm_thumbnail_worker,
+        "snapshot",
+        lambda: {"state": "queued", "queued": 8, "generated": 2, "failed": 0, "workers": 2, "target_workers": 1, "last_error": None},
+    )
+
+    response = client.get("/api/stats")
+
+    assert response.status_code == 200
+    assert response.json()["detail_thumbs_max_files"] == client.app.state.settings.detail_thumbs_max_files
+    assert response.json()["prewarm_thumbnails"]["queued"] == 8
 
 
 def test_startup_exposes_paused_state_from_resume_checkpoint(tmp_path, monkeypatch):

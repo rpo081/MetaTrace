@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { SearchResult, ViewMode, Stats } from '../../types'
+import { prewarmThumbnails } from '../../api'
 import Dropzone from '../../components/Dropzone'
 import DetailPanel from '../../components/DetailPanel'
 import ResultGrid from '../../components/ResultGrid'
@@ -66,6 +67,15 @@ export default function SearchView({
     })
     return sorted
   }, [search.response, searchSort, searchOrder])
+
+  const prewarmIds = useMemo(
+    () => sortedResults.map((result) => result.id),
+    [sortedResults],
+  )
+
+  useEffect(() => {
+    void prewarmThumbnails(search.loading ? [] : prewarmIds, 512).catch(() => {})
+  }, [search.loading, prewarmIds])
 
   // Close detail panel on Escape
   useEffect(() => {

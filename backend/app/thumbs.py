@@ -21,14 +21,32 @@ _THUMB_TMP_GLOBS = ("tmp*", "*.tmp", ".tmp*")
 _generation_locks = tuple(threading.Lock() for _ in range(256))
 _prune_lock = threading.Lock()
 ProcessPoolExecutor = cf.ProcessPoolExecutor
+ThreadPoolExecutor = cf.ThreadPoolExecutor
 
 
 def _generation_lock(path: Path) -> threading.Lock:
     return _generation_locks[hash(path) % len(_generation_locks)]
 
 
-def _prune_trigger_limit(settings, *, max_files: int | None = None) -> int:
-    cap = max_files if max_files is not None else getattr(settings, "thumbs_max_files", 0)
+def _thumb_cache_path(thumbs_dir: Path, image_id: int, side: int) -> Path:
+    return thumbs_dir / f"{image_id}_{side}.png"
+
+
+def _thumb_cache_glob(side: int) -> str:
+    return f"*_{side}.png"
+
+
+def _thumb_cache_cap(settings, side: int, *, max_files: int | None = None) -> int:
+    if max_files is not None:
+        return max_files
+    default_side = int(getattr(settings, "thumb_size", 256))
+    if side > default_side:
+        return int(getattr(settings, "detail_thumbs_max_files", getattr(settings, "thumbs_max_files", 0)))
+    return int(getattr(settings, "thumbs_max_files", 0))
+
+
+def _prune_trigger_limit(settings, side: int, *, max_files: int | None = None) -> int:
+    cap = _thumb_cache_cap(settings, side, max_files=max_files)
     if not cap or cap <= 0:
         return 0
     buffer = max(0, int(getattr(settings, "thumbs_prune_buffer", 0)))
@@ -68,12 +86,24 @@ def _bulk_generate_thumbnail_job(
     source = (root / rel_path).resolve()
     if not source.is_relative_to(root) or not source.is_file():
         return "missing"
-    cache = Path(thumbs_dir_str) / f"{image_id}_{side}.png"
+    cache = _thumb_cache_path(Path(thumbs_dir_str), image_id, side)
     if cache.exists():
         return "exists"
     image = _load_thumbnail_source(source)
     image.thumbnail((side, side))
     _write_thumbnail_png(image, cache, optimize=False)
+    return "generated"
+
+
+def _prewarm_generate_thumbnail_job(settings, image_id: int, rel_path: str, side: int) -> str:
+    root = Path(settings.store_path).resolve()
+    source = (root / rel_path).resolve()
+    if not source.is_relative_to(root) or not source.is_file():
+        return "missing"
+    cache = _thumb_cache_path(settings.thumbs_dir, image_id, side)
+    if cache.exists():
+        return "exists"
+    generate_thumbnail(settings, image_id, source, side, optimize=False)
     return "generated"
 
 
@@ -83,10 +113,11 @@ def generate_thumbnail(
     source: Path,
     side: int,
     *,
+    optimize: bool = True,
     prune: bool = True,
 ) -> Path:
     """Generate one cached thumbnail atomically and return its cache path."""
-    cache = settings.thumbs_dir / f"{image_id}_{side}.png"
+    cache = _thumb_cache_path(settings.thumbs_dir, image_id, side)
     lock = _generation_lock(cache)
     with lock:
         if cache.exists():
@@ -94,9 +125,9 @@ def generate_thumbnail(
         image = _load_thumbnail_source(source)
 
         image.thumbnail((side, side))
-        _write_thumbnail_png(image, cache, optimize=True)
+        _write_thumbnail_png(image, cache, optimize=optimize)
         if prune:
-            prune_thumb_cache(settings)
+            prune_thumb_cache(settings, side=side)
         return cache
 
 
@@ -202,10 +233,10 @@ class BulkThumbnailWorker:
             return self._target_workers_locked()
 
     def _count_cached(self) -> int:
-        return sum(1 for _ in self.settings.thumbs_dir.glob("*.png"))
+        return sum(1 for _ in self.settings.thumbs_dir.glob(_thumb_cache_glob(self.settings.thumb_size)))
 
     def _remaining_capacity(self, pending_count: int) -> int | None:
-        trigger_limit = _prune_trigger_limit(self.settings)
+        trigger_limit = _prune_trigger_limit(self.settings, self.settings.thumb_size)
         if not trigger_limit:
             return None
         if self._cache_count is None:
@@ -237,7 +268,7 @@ class BulkThumbnailWorker:
             candidate = self._next_candidate()
             if candidate is None:
                 return
-            cache = self.settings.thumbs_dir / f"{candidate.id}_{self.settings.thumb_size}.png"
+            cache = _thumb_cache_path(self.settings.thumbs_dir, candidate.id, self.settings.thumb_size)
             if cache.exists():
                 continue
             future = executor.submit(
@@ -307,6 +338,196 @@ class BulkThumbnailWorker:
             with self._lock:
                 self._thread = None
                 if self._state == "starting":
+                    self._state = "stopped"
+
+
+class PrewarmThumbnailWorker:
+    """Warm current result-list detail thumbnails in the background."""
+
+    def __init__(self, settings) -> None:
+        self.settings = settings
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._queue: deque[tuple[int, int, int]] = deque()
+        self._queued_keys: set[tuple[int, int]] = set()
+        self._inflight_keys: set[tuple[int, int]] = set()
+        self._version = 0
+        self._active_requests = 0
+        self._state = "stopped"
+        self._queued = 0
+        self._generated = 0
+        self._failed = 0
+        self._last_error: str | None = None
+        self._workers = max(1, int(getattr(settings, "prewarm_thumbnail_workers", 2)))
+        self._cache_counts: dict[int, int | None] = {}
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None:
+                return
+            self._state = "idle"
+            self._thread = threading.Thread(
+                target=self._run,
+                name="prewarm-thumbnail-worker",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=5)
+        with self._lock:
+            self._thread = None
+            self._state = "stopped"
+
+    def begin_foreground(self) -> None:
+        with self._lock:
+            self._active_requests += 1
+
+    def end_foreground(self) -> None:
+        with self._lock:
+            self._active_requests = max(0, self._active_requests - 1)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "state": self._state,
+                "queued": self._queued,
+                "generated": self._generated,
+                "failed": self._failed,
+                "workers": self._workers,
+                "target_workers": 1 if self._active_requests > 0 else self._workers,
+                "last_error": self._last_error,
+            }
+
+    def replace_queue(self, image_ids: list[int], *, side: int) -> int:
+        normalized_side = min(max(int(side), 64), 1024)
+        with self._lock:
+            self._version += 1
+            version = self._version
+            self._queue.clear()
+            self._queued_keys.clear()
+            self._queued = 0
+            self._cache_counts.pop(normalized_side, None)
+            for image_id in image_ids:
+                normalized_id = int(image_id)
+                if normalized_id <= 0:
+                    continue
+                key = (normalized_id, normalized_side)
+                if key in self._queued_keys or key in self._inflight_keys:
+                    continue
+                self._queue.append((normalized_id, normalized_side, version))
+                self._queued_keys.add(key)
+            self._queued = len(self._queue)
+            self._state = "queued" if self._queued else "idle"
+            return self._queued
+
+    def _target_workers(self) -> int:
+        with self._lock:
+            return 1 if self._active_requests > 0 else self._workers
+
+    def _count_cached(self, side: int) -> int:
+        try:
+            return sum(1 for _ in self.settings.thumbs_dir.glob(_thumb_cache_glob(side)))
+        except OSError as exc:
+            log.warning("could not count prewarm thumb cache for %dpx: %s", side, exc)
+            cached = self._cache_counts.get(side)
+            return cached if cached is not None else 0
+
+    def _remaining_capacity(self, side: int, pending_count: int) -> int | None:
+        trigger_limit = _prune_trigger_limit(self.settings, side)
+        if not trigger_limit:
+            return None
+        cached = self._cache_counts.get(side)
+        if cached is None:
+            cached = self._count_cached(side)
+            self._cache_counts[side] = cached
+        return max(0, trigger_limit - cached - pending_count)
+
+    def _next_item(self) -> tuple[int, int, int] | None:
+        with self._lock:
+            while self._queue:
+                image_id, side, version = self._queue.popleft()
+                self._queued_keys.discard((image_id, side))
+                if version != self._version:
+                    continue
+                self._queued = len(self._queue)
+                return image_id, side, version
+            self._queued = 0
+            return None
+
+    def _submit_ready_candidates(self, executor, pending: dict[cf.Future, tuple[int, int]]) -> None:
+        while not self._stop.is_set() and len(pending) < self._target_workers():
+            item = self._next_item()
+            if item is None:
+                if not pending:
+                    with self._lock:
+                        if self._state != "stopped":
+                            self._state = "idle"
+                return
+            image_id, side, _version = item
+            pending_for_side = sum(1 for _, pending_side in pending.values() if pending_side == side)
+            remaining_capacity = self._remaining_capacity(side, pending_for_side)
+            if remaining_capacity is not None and remaining_capacity <= 0:
+                with self._lock:
+                    self._state = "capacity"
+                return
+            cache = _thumb_cache_path(self.settings.thumbs_dir, image_id, side)
+            if cache.exists():
+                continue
+            row = db.get_by_id(self.settings.db_path, image_id)
+            if row is None:
+                continue
+            rel_path = getattr(row, "rel_path", row["rel_path"])
+            key = (image_id, side)
+            with self._lock:
+                self._inflight_keys.add(key)
+                self._state = "running"
+            future = executor.submit(_prewarm_generate_thumbnail_job, self.settings, image_id, rel_path, side)
+            pending[future] = key
+
+    def _handle_result(self, key: tuple[int, int], result: str) -> None:
+        image_id, side = key
+        with self._lock:
+            self._inflight_keys.discard((image_id, side))
+            if result == "generated":
+                self._generated += 1
+                if self._cache_counts.get(side) is not None:
+                    self._cache_counts[side] += 1
+            elif result == "missing":
+                self._failed += 1
+
+    def _run(self) -> None:
+        pending: dict[cf.Future, tuple[int, int]] = {}
+        executor = ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="thumb-prewarm")
+        try:
+            while not self._stop.is_set():
+                self._submit_ready_candidates(executor, pending)
+                if not pending:
+                    self._stop.wait(0.1)
+                    continue
+                done, _ = cf.wait(pending, timeout=0.2, return_when=cf.FIRST_COMPLETED)
+                for future in done:
+                    key = pending.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        with self._lock:
+                            self._inflight_keys.discard(key)
+                            self._failed += 1
+                            self._last_error = str(exc)
+                            self._state = "error"
+                        log.warning("thumbnail prewarm failed", exc_info=True)
+                        continue
+                    self._handle_result(key, result)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+            with self._lock:
+                self._thread = None
+                if self._state != "error":
                     self._state = "stopped"
 
 
@@ -407,13 +628,13 @@ class IdleThumbnailWorker:
 
     def _count_cached(self) -> int:
         try:
-            return sum(1 for _ in self.settings.thumbs_dir.glob("*.png"))
+            return sum(1 for _ in self.settings.thumbs_dir.glob(_thumb_cache_glob(self.settings.thumb_size)))
         except OSError as exc:
             log.warning("could not count thumb cache: %s", exc)
             return self._cache_count if self._cache_count is not None else 0
 
     def _at_capacity(self) -> bool:
-        trigger_limit = _prune_trigger_limit(self.settings)
+        trigger_limit = _prune_trigger_limit(self.settings, self.settings.thumb_size)
         if not trigger_limit:
             return False
         if self._cache_count is None:
@@ -450,7 +671,7 @@ class IdleThumbnailWorker:
             if candidate is None:
                 self._state = "complete"
                 return False
-            cache = self.settings.thumbs_dir / f"{candidate.id}_{self.settings.thumb_size}.png"
+            cache = _thumb_cache_path(self.settings.thumbs_dir, candidate.id, self.settings.thumb_size)
             try:
                 if cache.exists():
                     continue
@@ -528,19 +749,28 @@ def cleanup_orphan_thumb_temps(settings) -> int:
     return removed
 
 
-def prune_thumb_cache(settings, *, max_files: int | None = None) -> int:
+def prune_known_thumb_caches(settings) -> int:
+    """Prune the known cache tiers used by the UI and background workers."""
+    total = prune_thumb_cache(settings, side=settings.thumb_size)
+    if 512 > int(getattr(settings, "thumb_size", 256)):
+        total += prune_thumb_cache(settings, side=512)
+    return total
+
+
+def prune_thumb_cache(settings, *, side: int | None = None, max_files: int | None = None) -> int:
     """LRU-eviction for the thumbnail cache. Returns number pruned."""
-    cap = max_files if max_files is not None else getattr(settings, "thumbs_max_files", 0)
+    target_side = int(side if side is not None else getattr(settings, "thumb_size", 256))
+    cap = _thumb_cache_cap(settings, target_side, max_files=max_files)
     if not cap or cap <= 0:
         return 0
-    trigger_limit = _prune_trigger_limit(settings, max_files=max_files)
+    trigger_limit = _prune_trigger_limit(settings, target_side, max_files=max_files)
     try:
         with _prune_lock:
             thumbs_dir = settings.thumbs_dir
             if not thumbs_dir.is_dir():
                 return 0
             entries: list[tuple[float, Path]] = []
-            for path in thumbs_dir.glob("*.png"):
+            for path in thumbs_dir.glob(_thumb_cache_glob(target_side)):
                 try:
                     entries.append((path.stat().st_mtime, path))
                 except FileNotFoundError:

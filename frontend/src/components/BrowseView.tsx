@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { browseImages } from '../api'
+import { browseImages, prewarmThumbnails } from '../api'
 import type {
   BrowseFilters,
   BrowseImage,
@@ -169,6 +169,10 @@ export default function BrowseView() {
 
   // Build results array compatible with ResultGrid/ResultList
   const results: BrowseImage[] = data?.items ?? []
+
+  useEffect(() => {
+    void prewarmThumbnails(loading ? [] : results.map((result) => result.id), 512).catch(() => {})
+  }, [loading, results])
 
   return (
     <main id="main-content" className="browse-layout">

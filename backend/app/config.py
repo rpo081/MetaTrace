@@ -79,6 +79,17 @@ class Settings(BaseSettings):
         ge=0,
         description="Max cached thumbnails before LRU eviction (0=unbounded). 100k ≈5GB at 256px.",
     )
+    detail_thumbs_max_files: int = Field(
+        default=10000,
+        validation_alias=AliasChoices(
+            "METATRACE_DETAIL_THUMBS_MAX_FILES",
+            "DETAIL_THUMBS_MAX_FILES",
+            "METATRACE_THUMBS_512_MAX_FILES",
+            "THUMBS_512_MAX_FILES",
+        ),
+        ge=0,
+        description="Max cached thumbnails for detail-size requests larger than thumb_size (0=unbounded).",
+    )
     thumbs_prune_buffer: int = Field(
         default=100,
         validation_alias=AliasChoices("METATRACE_THUMBS_PRUNE_BUFFER", "THUMBS_PRUNE_BUFFER"),
@@ -121,6 +132,13 @@ class Settings(BaseSettings):
         ge=1,
         le=8,
         description="Bulk thumbnail worker limit while foreground user activity is present or still cooling down.",
+    )
+    prewarm_thumbnail_workers: int = Field(
+        default=2,
+        validation_alias=AliasChoices("METATRACE_PREWARM_THUMBNAIL_WORKERS", "PREWARM_THUMBNAIL_WORKERS"),
+        ge=1,
+        le=8,
+        description="Background worker count for prewarming detail thumbnails from current search/browse results.",
     )
     snapshot_max_age_hours: int = Field(
         default=24,

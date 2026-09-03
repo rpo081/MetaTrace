@@ -57,7 +57,7 @@ from .config import Settings
 from .indexer import Indexer
 from .scheduler import ScanScheduler
 from .search import SearchService
-from .thumbs import BulkThumbnailWorker, IdleThumbnailWorker, cleanup_orphan_thumb_temps, prune_thumb_cache
+from .thumbs import BulkThumbnailWorker, IdleThumbnailWorker, PrewarmThumbnailWorker, cleanup_orphan_thumb_temps, prune_known_thumb_caches
 
 log = logging.getLogger("metatrace")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -169,7 +169,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         orphan_temps = cleanup_orphan_thumb_temps(settings)
         if orphan_temps:
             log.info("cleaned up %d orphaned thumbnail temp file(s)", orphan_temps)
-        pruned = prune_thumb_cache(settings)
+        pruned = prune_known_thumb_caches(settings)
         if pruned:
             log.info("pruned %d excess thumbnail(s) on startup", pruned)
 
@@ -236,14 +236,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             scheduler.trigger_now()
         thumbnail_worker = IdleThumbnailWorker(settings, indexer)
         bulk_thumbnail_worker = BulkThumbnailWorker(settings, indexer)
+        prewarm_thumbnail_worker = PrewarmThumbnailWorker(settings)
         thumbnail_worker.set_bulk_worker(bulk_thumbnail_worker)
         app.state.thumbnail_worker = thumbnail_worker
         app.state.bulk_thumbnail_worker = bulk_thumbnail_worker
+        app.state.prewarm_thumbnail_worker = prewarm_thumbnail_worker
         thumbnail_worker.start()
+        prewarm_thumbnail_worker.start()
         log.info("MetaTrace ready (indexed=%d, model=%s:%s)",
                  indexer.count, settings.model_name, settings.model_pretrained)
         yield
         bulk_thumbnail_worker.stop()
+        prewarm_thumbnail_worker.stop()
         thumbnail_worker.stop()
         scheduler.stop()
 
@@ -286,10 +290,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         idle_worker = getattr(request.app.state, "thumbnail_worker", None)
         bulk_worker = getattr(request.app.state, "bulk_thumbnail_worker", None)
+        prewarm_worker = getattr(request.app.state, "prewarm_thumbnail_worker", None)
         if tracked and idle_worker is not None:
             idle_worker.begin_foreground()
         if tracked and bulk_worker is not None:
             bulk_worker.begin_foreground()
+        if tracked and prewarm_worker is not None:
+            prewarm_worker.begin_foreground()
         try:
             return await call_next(request)
         finally:
@@ -297,6 +304,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 idle_worker.end_foreground()
             if tracked and bulk_worker is not None:
                 bulk_worker.end_foreground()
+            if tracked and prewarm_worker is not None:
+                prewarm_worker.end_foreground()
 
     @app.middleware("http")
     async def security_headers(request, call_next):

@@ -33,6 +33,11 @@ class DisplayPathPrefixUpdate(BaseModel):
     prefix: str = Field(max_length=4096)
 
 
+class ThumbnailPrewarmRequest(BaseModel):
+    ids: list[int] = Field(default_factory=list, max_length=200)
+    size: int = Field(default=512, ge=64, le=1024)
+
+
 def _display_path_prefix(settings: Settings) -> str:
     return db.kv_get(settings.db_path, PATH_PREFIX_KEY) or ""
 
@@ -182,6 +187,7 @@ def stats(
     thumbs_count, thumbs_mb = _thumbs_stats(s)
     thumbnail_worker = getattr(st, "thumbnail_worker", None)
     bulk_thumbnail_worker = getattr(st, "bulk_thumbnail_worker", None)
+    prewarm_thumbnail_worker = getattr(st, "prewarm_thumbnail_worker", None)
     return {
         "indexed": st.indexer.count,
         "db_count": db.count(s.db_path),
@@ -195,8 +201,10 @@ def stats(
         "thumbs_count": thumbs_count,
         "thumbs_size_mb": thumbs_mb,
         "thumbs_max_files": s.thumbs_max_files,
+        "detail_thumbs_max_files": s.detail_thumbs_max_files,
         "idle_thumbnails": thumbnail_worker.snapshot() if thumbnail_worker is not None else None,
         "bulk_thumbnails": bulk_thumbnail_worker.snapshot() if bulk_thumbnail_worker is not None else None,
+        "prewarm_thumbnails": prewarm_thumbnail_worker.snapshot() if prewarm_thumbnail_worker is not None else None,
         "state": st.indexer.status["state"],
         "last_report": st.indexer.status["last_report"],
         "inventory_source": st.indexer.status.get("inventory_source"),
@@ -786,3 +794,17 @@ def stop_bulk_thumbnails(
     if not stopped:
         raise HTTPException(409, "thumbnail generation is not running")
     return {"stopped": True}
+
+
+@router.post("/thumbnails/prewarm", status_code=202)
+def prewarm_thumbnails(
+    payload: ThumbnailPrewarmRequest,
+    request: Request,
+    user=Depends(require_role("admin", "editor", "viewer")),
+) -> dict:
+    _check_rate_limit(request, "120/minute")
+    worker = getattr(request.app.state, "prewarm_thumbnail_worker", None)
+    if worker is None:
+        raise HTTPException(503, "thumbnail prewarm unavailable")
+    queued = worker.replace_queue(payload.ids, side=payload.size)
+    return {"queued": queued, "size": payload.size}

@@ -368,6 +368,20 @@ def test_thumbs_prune_buffer_validator():
         Settings(thumbs_prune_buffer=-1)
 
 
+def test_detail_thumbs_max_files_validator():
+    s = Settings(detail_thumbs_max_files=0)
+    assert s.detail_thumbs_max_files == 0
+    with pytest.raises(Exception):
+        Settings(detail_thumbs_max_files=-1)
+
+
+def test_prewarm_thumbnail_workers_validator():
+    s = Settings(prewarm_thumbnail_workers=1)
+    assert s.prewarm_thumbnail_workers == 1
+    with pytest.raises(Exception):
+        Settings(prewarm_thumbnail_workers=0)
+
+
 def test_snapshot_max_age_validator():
     s = Settings(snapshot_max_age_hours=0)
     assert s.snapshot_max_age_hours == 0
