@@ -173,6 +173,21 @@ class Settings(BaseSettings):
     )
     cookie_same_site: str = "lax"
 
+    # ── MFA (TOTP) settings ──────────────────────────────────────────────
+    # Fernet key for encrypting TOTP secrets at rest (``Fernet.generate_key()``).
+    # Required for any MFA operation; when unset, MFA endpoints return 500
+    # "MFA not configured" while all non-MFA behaviour stays identical.
+    mfa_encryption_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("METATRACE_MFA_ENCRYPTION_KEY", "MFA_ENCRYPTION_KEY"),
+    )
+    # Comma-separated roles forced to enroll in MFA (e.g. "admin").
+    # Empty (default) = opt-in only, no enforcement — preserves current behaviour.
+    mfa_required_roles: str = Field(
+        default="",
+        validation_alias=AliasChoices("METATRACE_MFA_REQUIRED_ROLES", "MFA_REQUIRED_ROLES"),
+    )
+
     @field_validator("cookie_secure", mode="before")
     @classmethod
     def _cookie_secure_coerce(cls, value: object) -> bool | None:
@@ -238,6 +253,15 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("METATRACE_TRUSTED_PROXY", "TRUSTED_PROXY"),
     )
 
+    @field_validator("mfa_encryption_key", mode="before")
+    @classmethod
+    def _mfa_key_blank_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value.strip() if isinstance(value, str) else value
+
     @field_validator("network_root", "admin_token", "cors_origins", mode="before")
     @classmethod
     def _blank_strings_to_none(cls, value: str | None) -> str | None:
@@ -261,6 +285,14 @@ class Settings(BaseSettings):
         if not self.cors_origins:
             return []
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def mfa_required_role_list(self) -> list[str]:
+        if not self.mfa_required_roles or not self.mfa_required_roles.strip():
+            return []
+        # Lowercased so "Admin" can't silently enforce nothing; unknown values
+        # simply never match a real role (fail-closed towards no enforcement).
+        return [r.strip().lower() for r in self.mfa_required_roles.split(",") if r.strip()]
 
     @property
     def extensions(self) -> frozenset[str]:

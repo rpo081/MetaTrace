@@ -28,6 +28,7 @@ class UserListItem(BaseModel):
     is_active: bool
     created_at: str
     last_login: str | None
+    mfa_enabled: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +93,29 @@ class ChangePasswordRequest(BaseModel):
 class MeResponse(BaseModel):
     user: UserPublic
     must_change_password: bool = False
+    mfa_enabled: bool = False
+
+
+# ---------------------------------------------------------------------------
+# MFA (TOTP) endpoint models
+# ---------------------------------------------------------------------------
+
+class MfaConfirmRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=16)
+
+
+class MfaVerifyRequest(BaseModel):
+    mfa_token: str = Field(..., min_length=10, max_length=2048)
+    code: str = Field(..., min_length=6, max_length=32)
+
+
+class MfaDisableRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=128)
+    code: str | None = Field(default=None, min_length=6, max_length=32)
+
+
+class MfaRegenerateRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=16)
 
 
 # ---------------------------------------------------------------------------

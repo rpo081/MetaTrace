@@ -39,6 +39,7 @@ beforeEach(() => {
       user: { ...adminUser, role: 'admin' },
       status: 'authenticated',
       mustChangePassword: false,
+      mfaEnabled: false,
     },
     loadingTooLong: false,
     login: vi.fn(),
@@ -93,6 +94,7 @@ describe('UserManagementSection', () => {
         user: { ...adminUser, id: 2, role: 'viewer' },
         status: 'authenticated',
         mustChangePassword: false,
+        mfaEnabled: false,
       },
     }
 
@@ -121,5 +123,50 @@ describe('UserManagementSection', () => {
     // The delete button on the self row is also disabled.
     const deleteBtn = screen.getByLabelText(/delete admin/i)
     expect(deleteBtn).toBeDisabled()
+  })
+
+  it('mfa_status_shown_and_reset_calls_api', async () => {
+    const mfaUser: UserListItem = {
+      id: 2, username: 'mfa-eve', email: 'eve@example.com', role: 'editor',
+      is_active: true, created_at: '2026-01-01T00:00:00Z', last_login: null,
+      mfa_enabled: true,
+    }
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url.endsWith('/api/users') && (!init?.method || init.method === 'GET')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ users: [adminUser, mfaUser] }),
+        } as unknown as Response
+      }
+      if (url.endsWith('/api/users/2/mfa/reset') && init?.method === 'POST') {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) } as unknown as Response
+      }
+      throw new Error(`unexpected fetch ${url} ${init?.method}`)
+    })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<UserManagementSection currentUserId={1} />)
+    await waitFor(() => {
+      expect(screen.getByText('mfa-eve')).toBeInTheDocument()
+    })
+
+    // 2FA status dot + Reset button only on the MFA-enabled row.
+    expect(screen.getByLabelText('2FA for mfa-eve')).toHaveTextContent('enabled')
+    expect(screen.queryByLabelText('Reset 2FA for admin')).toBeNull()
+
+    const { act } = await import('@testing-library/react')
+    await act(async () => {
+      screen.getByLabelText('Reset 2FA for mfa-eve').click()
+    })
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/users/2/mfa/reset',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
   })
 })

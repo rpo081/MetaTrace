@@ -303,6 +303,56 @@ describe('AuthContext', () => {
     expect(result.current.state.user).toBeNull()
   })
 
+  it('loginWithMfa_totp_and_backup_paths', async () => {
+    const calls: string[] = []
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url.endsWith('/api/auth/refresh')) {
+        return mockJsonResponse({ detail: 'no refresh cookie' }, { status: 401, ok: false })
+      }
+      if (url.endsWith('/api/auth/mfa/verify')) {
+        calls.push('totp')
+        return mockJsonResponse({ access_token: 'mfa-token' })
+      }
+      if (url.endsWith('/api/auth/mfa/verify-backup')) {
+        calls.push('backup')
+        return mockJsonResponse({ access_token: 'mfa-backup-token' })
+      }
+      if (url.endsWith('/api/auth/me')) {
+        return mockJsonResponse({
+          user: {
+            id: 5, username: 'mfa', email: 'm@e.com', role: 'viewer',
+            is_active: true, created_at: '2026-01-01T00:00:00Z', last_login: null,
+          },
+          must_change_password: false,
+          mfa_enabled: true,
+        })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    })
+
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider })
+
+    await waitFor(() => {
+      expect(result.current.state.status).toBe('unauthenticated')
+    })
+
+    // TOTP path (useBackup=false) hits /verify …
+    await act(async () => {
+      await result.current.loginWithMfa('pre-auth-1', '123456')
+    })
+    expect(getAccessToken()).toBe('mfa-token')
+    expect(result.current.state.status).toBe('authenticated')
+    expect(result.current.state.mfaEnabled).toBe(true)
+
+    // … backup path (useBackup=true) hits /verify-backup.
+    await act(async () => {
+      await result.current.loginWithMfa('pre-auth-2', 'AAAA-1111', true)
+    })
+    expect(getAccessToken()).toBe('mfa-backup-token')
+    expect(calls).toEqual(['totp', 'backup'])
+  })
+
   it('logout_clears_state_and_token', async () => {
     localStorage.setItem(STORAGE_KEY, 'token')
     fetchMock.mockResolvedValue(

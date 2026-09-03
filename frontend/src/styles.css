@@ -1775,3 +1775,19 @@ input[type='checkbox'] {
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+.mfa-qr {
+  width: 200px;
+  height: 200px;
+  align-self: center;
+  background: #fff;
+  border-radius: var(--radius-md);
+  padding: 8px;
+}
+.mfa-backup-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}

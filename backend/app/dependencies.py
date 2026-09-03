@@ -59,6 +59,48 @@ def _enforce_password_change(request: Request, user_row) -> None:
     raise HTTPException(status_code=403, detail="password_change_required")
 
 
+# MFA enforcement (opt-in via METATRACE_MFA_REQUIRED_ROLES, default empty = off).
+# Mirrors the password-change gate: users whose role is listed must have
+# mfa_enabled=1, otherwise every non-whitelisted endpoint 403s with
+# "mfa_required". The whitelist lets the user enroll/confirm or leave.
+_MFA_WHITELIST = frozenset({
+    "/api/auth/change-password",
+    "/api/auth/logout",
+    "/api/auth/me",
+    "/api/auth/mfa/status",
+    "/api/auth/mfa/enroll",
+    "/api/auth/mfa/qr",
+    "/api/auth/mfa/confirm",
+    "/api/auth/mfa/disable",
+    "/api/auth/mfa/regenerate-codes",
+})
+
+
+def _enforce_mfa_required(request: Request, user_row) -> None:
+    if isinstance(user_row, dict) and (
+        user_row.get("__virtual__") or user_row.get("__signed__")
+    ):
+        return
+    try:
+        keys = user_row.keys()
+    except Exception:
+        keys = ()
+    if "mfa_enabled" not in keys:
+        return
+    if user_row["mfa_enabled"] == 1:
+        return
+    if request.url.path in _MFA_WHITELIST:
+        return
+    settings: Settings = request.app.state.settings
+    required = settings.mfa_required_role_list
+    if not required:
+        return
+    role = user_row["role"] if isinstance(user_row, dict) else user_row["role"]
+    if role not in required:
+        return
+    raise HTTPException(status_code=403, detail="mfa_required")
+
+
 # ---------------------------------------------------------------------------
 # Layer 2 – decode JWT, fetch user, verify active
 # ---------------------------------------------------------------------------
@@ -78,6 +120,7 @@ def _decode_user_row(request: Request, token: str):
     if not row["is_active"]:
         raise HTTPException(status_code=403, detail="account disabled")
     _enforce_password_change(request, row)
+    _enforce_mfa_required(request, row)
     return row
 
 

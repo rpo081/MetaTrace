@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { ApiError } from '../../api'
 import {
+  adminResetMfa,
   deleteUser,
   listUsers,
   updateUser,
@@ -92,6 +93,24 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
     }
   }
 
+  async function resetMfa(u: UserListItem) {
+    if (!window.confirm(`Reset two-factor authentication for "${u.username}"? They can sign in with password only afterwards.`)) return
+    setBusy(true)
+    setError(null)
+    try {
+      await adminResetMfa(u.id)
+      await refresh()
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message)
+      } else {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function deleteRow(u: UserListItem) {
     if (u.id === currentUserId) return
     if (!window.confirm(`Delete user "${u.username}"? This cannot be undone.`)) return
@@ -146,6 +165,7 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
                 <th scope="col">Username</th>
                 <th scope="col">Role</th>
                 <th scope="col">Active</th>
+                <th scope="col">2FA</th>
                 <th scope="col">Last login</th>
                 <th scope="col">Actions</th>
               </tr>
@@ -203,6 +223,11 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
                         {u.is_active ? 'Deactivate' : 'Activate'}
                       </button>
                     </td>
+                    <td>
+                      <span role="status" aria-label={`2FA for ${u.username}`}>
+                        {u.mfa_enabled ? 'enabled' : '—'}
+                      </span>
+                    </td>
                     <td className="mono">
                       {u.last_login ? u.last_login.replace('T', ' ').replace('Z', '') : '—'}
                     </td>
@@ -217,6 +242,17 @@ function UserManagementCard({ currentUserId }: { currentUserId: number | null })
                         >
                           Reset password
                         </button>
+                        {u.mfa_enabled && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => resetMfa(u)}
+                            disabled={busy}
+                            aria-label={`Reset 2FA for ${u.username}`}
+                          >
+                            Reset 2FA
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="btn btn-sm btn-danger-soft"

@@ -293,11 +293,17 @@ async def register(
 # POST /api/auth/login
 # ---------------------------------------------------------------------------
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login")
 async def login(request: Request, body: LoginRequest, response: Response):
     _check_rate_limit(request, "10/minute", per_endpoint=True)
     settings = _settings(request)
     db_path = settings.db_path
+
+    # Fail fast with a controlled generic error when no JWT secret is
+    # configured (instead of crashing inside jwt.encode with an unhandled
+    # exception on the success path below).
+    if not settings.jwt_secret:
+        raise HTTPException(500, "internal error")
 
     row = db.get_user_by_username(db_path, body.username)
     if row is None:
@@ -329,6 +335,22 @@ async def login(request: Request, body: LoginRequest, response: Response):
 
     if not row["is_active"]:
         raise HTTPException(403, "account disabled")
+
+    # MFA step-up: password was correct but a second factor is required.
+    # Issue a short-lived pre-auth token and NO session cookies; the client
+    # completes the login via POST /api/auth/mfa/verify{,-backup}.
+    # Users without MFA take the identical path as before.
+    if row["mfa_enabled"]:
+        from ..mfa import create_mfa_token
+
+        # Fail closed one step early when the MFA key is gone: the challenge
+        # could never verify, so don't issue an unusable pre-auth token.
+        if not settings.mfa_encryption_key:
+            log.error("login for MFA user without METATRACE_MFA_ENCRYPTION_KEY configured")
+            raise HTTPException(500, "internal error")
+        mfa_token = create_mfa_token(row["id"], secret=settings.jwt_secret)
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return {"mfa_required": True, "mfa_token": mfa_token}
 
     # Success
     db.record_login_success(db_path, row["id"])
@@ -471,9 +493,11 @@ async def me(request: Request, response: Response, user=Depends(get_current_user
     # cached before the flag was set (e.g. flag flipped while a JWT was in
     # flight).
     fresh = db.get_user_by_id(settings.db_path, user["id"])
+    current = fresh if fresh is not None else user
     return MeResponse(
-        user=_user_to_public(fresh if fresh is not None else user),
-        must_change_password=bool((fresh or user)["must_change_password"]),
+        user=_user_to_public(current),
+        must_change_password=bool(current["must_change_password"]),
+        mfa_enabled=bool(current["mfa_enabled"]) if "mfa_enabled" in current.keys() else False,
     )
 
 

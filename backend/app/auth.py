@@ -79,8 +79,14 @@ def create_access_token(user_id: int, role: str, *, secret: str, ttl_minutes: in
 
 
 def decode_access_token(token: str, *, secret: str) -> dict:
-    """Decode and validate a JWT. Raises ``jwt.InvalidTokenError`` on failure."""
-    return jwt.decode(
+    """Decode and validate a JWT. Raises ``jwt.InvalidTokenError`` on failure.
+
+    Pre-auth ``mfa_token``s share secret/issuer/audience with access tokens but
+    carry ``purpose="mfa"`` — they must NEVER authenticate as access tokens
+    (otherwise the password step alone would grant API access, bypassing MFA).
+    Legacy access tokens carry no ``purpose`` claim and stay valid.
+    """
+    payload = jwt.decode(
         token,
         secret,
         algorithms=["HS256"],
@@ -88,6 +94,9 @@ def decode_access_token(token: str, *, secret: str) -> dict:
         audience=_JWT_AUDIENCE,
         options={"require": ["exp", "iat", "sub", "iss", "aud"]},
     )
+    if payload.get("purpose") == "mfa":
+        raise jwt.InvalidTokenError("pre-auth token is not an access token")
+    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@ class _TokenRedactFilter(logging.Filter):
 from . import db, embeddings
 from .api.routes import router
 from .api.auth import router as auth_router
+from .api.mfa import router as mfa_router
 from .api.users import router as users_router
 from .auth import audit, hash_password
 from .config import Settings
@@ -202,6 +203,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "for any internet-facing deployment."
             )
 
+        unknown_mfa_roles = [
+            r for r in settings.mfa_required_role_list if r not in ("admin", "editor", "viewer")
+        ]
+        if unknown_mfa_roles:
+            log.warning(
+                "METATRACE_MFA_REQUIRED_ROLES contains unknown roles %s — "
+                "they match no user (valid: admin, editor, viewer); "
+                "enforcement may be silently weaker than intended.",
+                ", ".join(unknown_mfa_roles),
+            )
+
         if not settings.jwt_secret and not settings.allow_unauthenticated:
             # A-4 hardening: internet-facing deployments must set JWT secret.
             # Keep warning (not crash) to preserve legacy X-Admin-Token mode,
@@ -331,6 +343,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(router)
     app.include_router(auth_router)
+    app.include_router(mfa_router)
     app.include_router(users_router)
 
     static_dir = Path(__file__).resolve().parent.parent / "static"

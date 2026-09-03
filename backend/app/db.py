@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash        TEXT NOT NULL,
     role                 TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('admin', 'editor', 'viewer')),
     mfa_secret           TEXT,
+    mfa_enabled          INTEGER NOT NULL DEFAULT 0,
+    mfa_enrolled_at      TEXT,
+    mfa_last_counter     INTEGER,
     is_active            INTEGER NOT NULL DEFAULT 1,
     must_change_password INTEGER NOT NULL DEFAULT 0,
     created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -78,6 +81,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
     user_agent  TEXT,
     timestamp   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     details     TEXT
+);
+
+-- MFA (TOTP) backup codes: only SHA-256 hashes stored, plaintext shown once.
+CREATE TABLE IF NOT EXISTS mfa_backup_codes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash   TEXT NOT NULL UNIQUE,
+    used_at     TEXT,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_backup_codes_user ON mfa_backup_codes(user_id);
+
+-- Single-use pre-auth (mfa_token) JTIs consumed by a successful verify.
+CREATE TABLE IF NOT EXISTS mfa_used_tokens (
+    jti         TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    used_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at  TEXT NOT NULL
 );
 """
 
@@ -384,6 +405,14 @@ def init_db(db_path: Path, *, configure_journal: bool = True) -> None:
             conn.execute(
                 "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
             )
+        if "mfa_enabled" not in cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0"
+            )
+        if "mfa_enrolled_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN mfa_enrolled_at TEXT")
+        if "mfa_last_counter" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN mfa_last_counter INTEGER")
         derived_added = _ensure_images_schema(conn)
         if derived_added:
             _backfill_xmp_search_fields(conn)
@@ -1207,3 +1236,130 @@ def audit_log_insert(
             """,
             (user_id, action, resource, ip_address, user_agent, details),
         )
+
+
+# ── MFA (TOTP) ──────────────────────────────────────────────────────────
+
+def set_mfa_secret(db_path: Path, user_id: int, encrypted_secret: str | None) -> None:
+    """Store the (Fernet-encrypted) pending TOTP secret. ``None`` clears it."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE users SET mfa_secret = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+            (encrypted_secret, user_id),
+        )
+
+
+def enable_mfa(db_path: Path, user_id: int) -> None:
+    """Mark MFA as enabled after a successful confirm."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE users SET mfa_enabled = 1, "
+            "mfa_enrolled_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+            (user_id,),
+        )
+
+
+def disable_mfa(db_path: Path, user_id: int) -> None:
+    """Fully clear MFA state (secret, enabled flag, counter, backup codes)."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE users SET mfa_secret = NULL, mfa_enabled = 0, "
+            "mfa_enrolled_at = NULL, mfa_last_counter = NULL, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+            (user_id,),
+        )
+        conn.execute("DELETE FROM mfa_backup_codes WHERE user_id = ?", (user_id,))
+
+
+def set_mfa_last_counter(db_path: Path, user_id: int, counter: int) -> None:
+    """Record the TOTP time-step counter of the last successful verify (replay guard)."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE users SET mfa_last_counter = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+            (counter, user_id),
+        )
+
+
+def compare_and_set_mfa_counter(db_path: Path, user_id: int, counter: int) -> bool:
+    """Atomically advance the replay-guard counter iff *counter* is newer.
+
+    Returns True when the row was updated, False when a counter >= *counter*
+    is already stored (replay). The guarded UPDATE + SQLite writer
+    serialization make concurrent verifies with the same 30 s code safe:
+    exactly one wins, the other sees rowcount 0. Same pattern as
+    ``revoke_refresh_token`` reuse detection.
+    """
+    with closing(connect(db_path)) as conn, conn:
+        cur = conn.execute(
+            "UPDATE users SET mfa_last_counter = ?, "
+            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+            "WHERE id = ? AND (mfa_last_counter IS NULL OR mfa_last_counter < ?)",
+            (counter, user_id, counter),
+        )
+        return int(cur.rowcount) > 0
+
+
+def store_mfa_backup_codes(db_path: Path, user_id: int, code_hashes: list[str]) -> None:
+    """Replace all backup codes for a user with a new batch (hashes only)."""
+    with closing(connect(db_path)) as conn, conn:
+        conn.execute("DELETE FROM mfa_backup_codes WHERE user_id = ?", (user_id,))
+        conn.executemany(
+            "INSERT INTO mfa_backup_codes (user_id, code_hash) VALUES (?, ?)",
+            [(user_id, h) for h in code_hashes],
+        )
+
+
+def list_mfa_backup_codes(db_path: Path, user_id: int) -> list[sqlite3.Row]:
+    with closing(connect(db_path)) as conn:
+        return conn.execute(
+            "SELECT * FROM mfa_backup_codes WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        ).fetchall()
+
+
+def count_unused_mfa_backup_codes(db_path: Path, user_id: int) -> int:
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM mfa_backup_codes WHERE user_id = ? AND used_at IS NULL",
+            (user_id,),
+        ).fetchone()
+    return int(row["n"]) if row is not None else 0
+
+
+def mark_mfa_backup_code_used(db_path: Path, code_hash: str) -> int:
+    """Mark a backup code consumed. Returns rows updated (0 = already used)."""
+    with closing(connect(db_path)) as conn, conn:
+        cur = conn.execute(
+            "UPDATE mfa_backup_codes SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+            "WHERE code_hash = ? AND used_at IS NULL",
+            (code_hash,),
+        )
+        return int(cur.rowcount)
+
+
+def consume_mfa_token_jti(db_path: Path, jti: str, user_id: int, expires_at: str) -> bool:
+    """Insert a consumed pre-auth JTI. Returns False if already used (replay)."""
+    with closing(connect(db_path)) as conn, conn:
+        # Opportunistic cleanup of expired entries keeps the table tiny.
+        conn.execute(
+            "DELETE FROM mfa_used_tokens WHERE expires_at < strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+        )
+        try:
+            conn.execute(
+                "INSERT INTO mfa_used_tokens (jti, user_id, expires_at) VALUES (?, ?, ?)",
+                (jti, user_id, expires_at),
+            )
+        except sqlite3.IntegrityError:
+            return False
+    return True
+
+
+def is_mfa_token_jti_used(db_path: Path, jti: str) -> bool:
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            "SELECT jti FROM mfa_used_tokens WHERE jti = ?", (jti,)
+        ).fetchone()
+    return row is not None

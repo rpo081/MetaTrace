@@ -16,6 +16,8 @@ import {
   getAccessToken,
   login as apiLogin,
   logout as apiLogout,
+  mfaVerify as apiMfaVerify,
+  mfaVerifyBackup as apiMfaVerifyBackup,
   refreshAccessToken,
   setAccessToken,
   type MeResponse,
@@ -34,15 +36,18 @@ export interface AuthState {
   user: UserPublic | null
   status: AuthStatus
   mustChangePassword: boolean
+  mfaEnabled: boolean
 }
 
 export interface AuthApi {
   state: AuthState
   loadingTooLong: boolean
   login: (username: string, password: string) => Promise<void>
+  loginWithMfa: (mfaToken: string, code: string, useBackup?: boolean) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<string | null>
   changePassword: (current: string, next: string) => Promise<void>
+  setMfaEnabled: (enabled: boolean) => void
   retryBoot: () => void
   withAuthRetry: <T>(fn: () => Promise<T>) => Promise<T>
 }
@@ -51,6 +56,7 @@ const INITIAL_STATE: AuthState = {
   user: null,
   status: 'loading',
   mustChangePassword: false,
+  mfaEnabled: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const token = getAccessToken()
     const bootWithToken = (tok: string | null) => {
       if (!tok) {
-        setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
+        setState({ user: null, status: 'unauthenticated', mustChangePassword: false, mfaEnabled: false })
         return
       }
       fetchMe()
@@ -88,13 +94,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             user: me.user,
             status: 'authenticated',
             mustChangePassword: me.must_change_password,
+            mfaEnabled: me.mfa_enabled ?? false,
           })
         })
         .catch((err: unknown) => {
           if (cancelled) return
           if (err instanceof ApiError && err.status === 401) {
             setAccessToken(null)
-            setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
+            setState({ user: null, status: 'unauthenticated', mustChangePassword: false, mfaEnabled: false })
             return
           }
         })
@@ -132,9 +139,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(t)
   }, [state.status])
 
-  const login = useCallback(async (username: string, password: string) => {
-    const result = await apiLogin(username, password)
-    setAccessToken(result.access_token)
+  const finishLogin = useCallback(async (accessToken: string) => {
+    setAccessToken(accessToken)
     // Clear legacy admin token that would cause 403 vs 401 cascade
     try {
       const { clearLegacyAdminToken } = await import('../../lib/storage')
@@ -146,7 +152,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user: me.user,
       status: 'authenticated',
       mustChangePassword: me.must_change_password,
+      mfaEnabled: me.mfa_enabled ?? false,
     })
+  }, [])
+
+  const login = useCallback(async (username: string, password: string) => {
+    // May throw MfaRequiredError when a second factor is required — the
+    // LoginPage catches it and renders the Step-2 code form. Non-MFA logins
+    // behave exactly as before.
+    const result = await apiLogin(username, password)
+    await finishLogin(result.access_token)
+  }, [finishLogin])
+
+  const loginWithMfa = useCallback(async (mfaToken: string, code: string, useBackup = false) => {
+    const result = useBackup
+      ? await apiMfaVerifyBackup(mfaToken, code)
+      : await apiMfaVerify(mfaToken, code)
+    await finishLogin(result.access_token)
+  }, [finishLogin])
+
+  const setMfaEnabled = useCallback((enabled: boolean) => {
+    // No-op when unchanged: MfaSetupModal polls status into this flag, and a
+    // needless new state object per poll would re-render every consumer and
+    // (via context identity) re-trigger the modal's status effect in a loop.
+    setState((prev) => (prev.mfaEnabled === enabled ? prev : { ...prev, mfaEnabled: enabled }))
   }, [])
 
   const logout = useCallback(async () => {
@@ -156,7 +185,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { clearLegacyAdminToken } = await import('../../lib/storage')
       clearLegacyAdminToken()
     } catch { /* ignore */ }
-    setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
+    setState({ user: null, status: 'unauthenticated', mustChangePassword: false, mfaEnabled: false })
   }, [])
 
   const refresh = useCallback(async (): Promise<string | null> => {
@@ -174,7 +203,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const token = await p
       if (!token) {
         setAccessToken(null)
-        setState({ user: null, status: 'unauthenticated', mustChangePassword: false })
+        setState({ user: null, status: 'unauthenticated', mustChangePassword: false, mfaEnabled: false })
       }
       return token
     } finally {
@@ -219,9 +248,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     state,
     loadingTooLong,
     login,
+    loginWithMfa,
     logout,
     refresh,
     changePassword,
+    setMfaEnabled,
     retryBoot,
     withAuthRetry,
   }

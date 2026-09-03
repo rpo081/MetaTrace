@@ -240,6 +240,23 @@ Admin UI: from the browser console run `localStorage.setItem('metatrace_admin_to
   `Cross-Origin-Resource-Policy: same-origin`, `Referrer-Policy: no-referrer`.
 - Uploads are streamed and aborted with `413` as soon as they exceed
   `MAX_UPLOAD_MB`; error responses are generic (details go to server logs).
+- **Two-factor authentication (TOTP, opt-in):** any user can enable 2FA in
+  Settings → Account (`Enable 2FA`) with an authenticator app (RFC 6238,
+  6 digits / 30 s, ±1 step tolerance). Enrollment shows a QR code plus a
+  manual key and 10 single-use backup codes (`XXXX-XXXX-XXXX`, shown once,
+  Argon2id-hashed at rest).
+  Login then becomes two-step: password → short-lived pre-auth token
+  (`5 min`, single-use, never accepted as an access token) → code or backup
+  code. Secrets are Fernet-encrypted at rest (`METATRACE_MFA_ENCRYPTION_KEY`),
+  codes are rate-limited (`5/min`) and feed the account lockout, and an
+  atomic per-30 s replay guard rejects code reuse (each code works once —
+  right after enrollment, wait for the next code before the first 2FA login).
+  Admins can reset a user's 2FA via
+  `POST /api/users/{id}/mfa/reset` (user management shows the 2FA status).
+  Users without 2FA see no behaviour change. Set
+  `METATRACE_MFA_REQUIRED_ROLES="admin"` (or `"admin,editor"`) to force
+  enrollment for those roles (403 `mfa_required` until enabled). Keep the
+  server clock NTP-synced — drifted clocks reject valid codes.
 - The container runs the server as the unprivileged `appuser`; the entrypoint
   fixes `/data` volume ownership on first start, then drops privileges. To run
   fully rootless instead, pre-create the data volume owned by your UID and set
@@ -293,6 +310,8 @@ Environment variables (or `.env`, see `.env.example`):
 | `METATRACE_LOCKOUT_THRESHOLD` | `5` | failed logins before account lock |
 | `METATRACE_LOCKOUT_MINUTES` | `15` | lockout duration in minutes |
 | `METATRACE_ALLOW_UNAUTH` | `false` | trusted-LAN escape hatch: when `true` and no JWT secret is set, mutating endpoints accept no auth. **Must be `false` for internet-facing deployments** |
+| `METATRACE_MFA_ENCRYPTION_KEY` | — | Fernet key for encrypting TOTP secrets at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. **Required for any 2FA operation** — when unset, MFA endpoints return 500 while all non-MFA behaviour stays identical |
+| `METATRACE_MFA_REQUIRED_ROLES` | — (empty) | comma-separated roles forced to enroll in 2FA (e.g. `admin` or `admin,editor`). Empty = opt-in only, no enforcement |
 
 ## Performance notes
 

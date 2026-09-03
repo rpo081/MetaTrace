@@ -22,3 +22,7 @@ limits==3.14.0
 argon2-cffi==25.1.0
 PyJWT==2.13.0
 email-validator==2.3.0
+# MFA (TOTP) dependencies — exact pins, see 2FA plan Phase 1
+pyotp==2.10.0
+qrcode==8.2
+cryptography==44.0.0

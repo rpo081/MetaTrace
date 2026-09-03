@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { RescanDeltaResponse, Stats } from '../../types'
 import ScanReportLine, { getReportRates } from '../../components/ScanReportLine'
 import { ChangePasswordModal } from '../auth/ChangePasswordModal'
+import { MfaSetupModal } from '../auth/MfaSetupModal'
 import { UserManagementSection } from '../auth/UserManagementSection'
 import { useAuth } from '../auth/AuthContext'
 import { getDisplayPathPrefix, startBulkThumbnails, stopBulkThumbnails, updateDisplayPathPrefix } from '../../api'
@@ -115,6 +116,7 @@ export default function SettingsView({
 }: Props) {
   const { state } = useAuth()
   const [showPw, setShowPw] = useState(false)
+  const [showMfa, setShowMfa] = useState(false)
   const [pathPrefix, setPathPrefix] = useState('')
   const [pathPrefixLoading, setPathPrefixLoading] = useState(true)
   const [pathPrefixSaving, setPathPrefixSaving] = useState(false)
@@ -136,6 +138,10 @@ export default function SettingsView({
 
   const closePw = useCallback(() => {
     setShowPw(false)
+  }, [])
+
+  const closeMfa = useCallback(() => {
+    setShowMfa(false)
   }, [])
 
   const handlePwSuccess = useCallback(() => {
@@ -363,9 +369,18 @@ export default function SettingsView({
           </div>
           <div className="settings-result">
             <div className="muted">Signed in as {state.user?.username} — {state.user?.role}</div>
-            <button type="button" className="btn" onClick={() => setShowPw(true)}>
-              Change password
-            </button>
+            <div className="muted">
+              Two-factor authentication:{' '}
+              <span role="status">{state.mfaEnabled ? 'enabled' : 'disabled'}</span>
+            </div>
+            <div className="settings-actions">
+              <button type="button" className="btn" onClick={() => setShowPw(true)}>
+                Change password
+              </button>
+              <button type="button" className="btn" onClick={() => setShowMfa(true)}>
+                {state.mfaEnabled ? 'Manage 2FA' : 'Enable 2FA'}
+              </button>
+            </div>
           </div>
         </section>
 
@@ -380,6 +395,13 @@ export default function SettingsView({
           dismissible={true}
           onCancel={closePw}
           onSuccess={handlePwSuccess}
+        />
+      )}
+
+      {showMfa && (
+        <MfaSetupModal
+          onCancel={closeMfa}
+          onChanged={refreshStats}
         />
       )}
     </main>

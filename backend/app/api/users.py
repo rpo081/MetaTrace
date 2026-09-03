@@ -26,6 +26,10 @@ _admin = Depends(require_role("admin"))
 
 
 def _serialize_user(row) -> UserListItem:
+    try:
+        keys = row.keys()
+    except Exception:
+        keys = ()
     return UserListItem(
         id=row["id"],
         username=row["username"],
@@ -34,6 +38,7 @@ def _serialize_user(row) -> UserListItem:
         is_active=bool(row["is_active"]),
         created_at=row["created_at"],
         last_login=row["last_login"],
+        mfa_enabled=bool(row["mfa_enabled"]) if "mfa_enabled" in keys else False,
     )
 
 
@@ -199,10 +204,45 @@ async def reset_password(request: Request, user_id: int, body: AdminResetPasswor
     pw_hash = hash_password(body.new_password)
     db.update_user(db_path, user_id, password_hash=pw_hash)
 
+    # Revoke a *pending* (enrolled-but-unconfirmed) MFA secret: whoever
+    # planted it via a briefly-hijacked session must not be able to confirm
+    # it after the credential reset. An already-enabled factor is left
+    # untouched (use mfa/reset to wipe it deliberately).
+    try:
+        if not existing["mfa_enabled"] and existing["mfa_secret"]:
+            db.set_mfa_secret(db_path, user_id, None)
+    except (KeyError, IndexError):
+        pass
+
     # Revoke all refresh tokens so the user must re-login
     revoke_all_user_tokens(db_path, user_id)
 
     audit(db_path, action="admin_reset_password", resource=f"user:{user_id}",
+          details=f"username={existing['username']}")
+
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/users/{id}/mfa/reset — admin MFA reset (lockout recovery)
+# ---------------------------------------------------------------------------
+
+@router.post("/{user_id}/mfa/reset", dependencies=[_admin])
+async def reset_mfa(request: Request, user_id: int, admin=Depends(require_role("admin"))):
+    _check_rate_limit(request, "10/minute", per_endpoint=True)
+    settings = request.app.state.settings
+    db_path = settings.db_path
+
+    existing = db.get_user_by_id(db_path, user_id)
+    if existing is None:
+        raise HTTPException(404, "user not found")
+
+    db.disable_mfa(db_path, user_id)
+    revoke_all_user_tokens(db_path, user_id)
+
+    audit(db_path, user_id=admin["id"], action="mfa_reset", resource=f"user:{user_id}",
+          ip_address=request.client.host if request.client else None,
+          user_agent=request.headers.get("user-agent"),
           details=f"username={existing['username']}")
 
     return {"ok": True}
