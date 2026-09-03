@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 _THUMB_TMP_GLOBS = ("tmp*", "*.tmp", ".tmp*")
 _generation_locks = tuple(threading.Lock() for _ in range(256))
+_prune_lock = threading.Lock()
 ProcessPoolExecutor = cf.ProcessPoolExecutor
 
 
@@ -525,24 +526,32 @@ def prune_thumb_cache(settings, *, max_files: int | None = None) -> int:
     if not cap or cap <= 0:
         return 0
     try:
-        thumbs_dir = settings.thumbs_dir
-        if not thumbs_dir.is_dir():
-            return 0
-        files = list(thumbs_dir.glob("*.png"))
-        if len(files) <= cap:
-            return 0
-        files.sort(key=lambda p: p.stat().st_mtime)
-        to_remove = len(files) - cap
-        removed = 0
-        for p in files[:to_remove]:
-            try:
-                p.unlink()
-                removed += 1
-            except OSError as exc:
-                log.warning("thumb LRU prune failed for %s: %s", p.name, exc)
-        if removed:
-            log.info("thumb cache LRU pruned %d file(s) (cap=%d)", removed, cap)
-        return removed
+        with _prune_lock:
+            thumbs_dir = settings.thumbs_dir
+            if not thumbs_dir.is_dir():
+                return 0
+            entries: list[tuple[float, Path]] = []
+            for path in thumbs_dir.glob("*.png"):
+                try:
+                    entries.append((path.stat().st_mtime, path))
+                except FileNotFoundError:
+                    continue
+            if len(entries) <= cap:
+                return 0
+            entries.sort(key=lambda item: item[0])
+            to_remove = len(entries) - cap
+            removed = 0
+            for _, path in entries[:to_remove]:
+                try:
+                    path.unlink()
+                    removed += 1
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    log.warning("thumb LRU prune failed for %s: %s", path.name, exc)
+            if removed:
+                log.info("thumb cache LRU pruned %d file(s) (cap=%d)", removed, cap)
+            return removed
     except Exception:  # noqa: BLE001
         log.warning("thumb cache prune failed", exc_info=True)
         return 0

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import concurrent.futures as cf
+import os
 from PIL import Image
 
 from backend.app import db
@@ -172,3 +173,30 @@ def test_bulk_worker_reduces_target_workers_during_foreground_activity(tmp_path)
 
     worker.end_foreground()
     assert worker.snapshot()["target_workers"] == 2
+
+
+def test_prune_thumb_cache_ignores_missing_files_during_stat_and_unlink(tmp_path, monkeypatch):
+    settings, _, _ = _environment(tmp_path, max_files=1)
+    first = settings.thumbs_dir / "1_256.png"
+    second = settings.thumbs_dir / "2_256.png"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    original_stat = os.stat
+    original_unlink = os.unlink
+
+    def flaky_stat(path, *args, **kwargs):
+        if str(path).endswith("2_256.png"):
+            raise FileNotFoundError()
+        return original_stat(path, *args, **kwargs)
+
+    def flaky_unlink(path, *args, **kwargs):
+        if str(path).endswith("1_256.png"):
+            raise FileNotFoundError()
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", flaky_stat)
+    monkeypatch.setattr(os, "unlink", flaky_unlink)
+
+    assert thumbs.prune_thumb_cache(settings, max_files=0) == 0
+    assert thumbs.prune_thumb_cache(settings) == 0
