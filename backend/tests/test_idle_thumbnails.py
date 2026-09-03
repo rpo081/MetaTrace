@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import concurrent.futures as cf
 from PIL import Image
 
 from backend.app import db
@@ -95,3 +96,79 @@ def test_worker_stops_at_cache_capacity_without_pruning(tmp_path, monkeypatch):
     assert worker.run_once() is False
     assert worker.snapshot()["state"] == "capacity"
     assert existing.exists()
+
+
+def test_idle_worker_yields_while_bulk_worker_runs(tmp_path):
+    settings, store, indexer = _environment(tmp_path)
+    _add_image(settings, store, "image.png", "2026-01-01T00:00:00Z")
+    worker = thumbs.IdleThumbnailWorker(settings, indexer)
+    worker.set_bulk_worker(SimpleNamespace(is_running=lambda: True))
+
+    assert worker.run_once() is False
+    assert worker.snapshot()["state"] == "waiting"
+
+
+def test_bulk_worker_generates_missing_thumbnails(tmp_path, monkeypatch):
+    settings, store, indexer = _environment(tmp_path)
+    settings.admin_thumbnail_workers = 2
+    first_id = _add_image(settings, store, "new.png", "2026-02-01T00:00:00Z")
+    second_id = _add_image(settings, store, "old.png", "2026-01-01T00:00:00Z")
+
+    class FakeExecutor:
+        def __init__(self, *, max_workers, mp_context):
+            self.max_workers = max_workers
+            self.mp_context = mp_context
+
+        def submit(self, fn, *args):
+            future = cf.Future()
+            try:
+                future.set_result(fn(*args))
+            except Exception as exc:  # noqa: BLE001
+                future.set_exception(exc)
+            return future
+
+        def shutdown(self, wait=False, cancel_futures=True):
+            return None
+
+    monkeypatch.setattr(thumbs, "ProcessPoolExecutor", FakeExecutor)
+
+    worker = thumbs.BulkThumbnailWorker(settings, indexer)
+
+    assert worker.start() is True
+    deadline = __import__("time").time() + 3
+    while worker.is_running() and __import__("time").time() < deadline:
+        pass
+
+    assert worker.snapshot()["state"] == "complete"
+    assert worker.snapshot()["generated"] == 2
+    assert (settings.thumbs_dir / f"{first_id}_{settings.thumb_size}.png").exists()
+    assert (settings.thumbs_dir / f"{second_id}_{settings.thumb_size}.png").exists()
+
+
+def test_bulk_worker_rejects_start_while_scan_active(tmp_path):
+    settings, store, indexer = _environment(tmp_path)
+    indexer.status["state"] = "scanning"
+    worker = thumbs.BulkThumbnailWorker(settings, indexer)
+
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        assert str(exc) == "scan_active"
+    else:
+        raise AssertionError("expected scan_active runtime error")
+
+
+def test_bulk_worker_reduces_target_workers_during_foreground_activity(tmp_path):
+    settings, store, indexer = _environment(tmp_path)
+    settings.admin_thumbnail_workers = 6
+    settings.admin_thumbnail_foreground_workers = 2
+    settings.idle_thumbnail_grace_sec = 10
+    worker = thumbs.BulkThumbnailWorker(settings, indexer)
+
+    assert worker.snapshot()["target_workers"] == 6
+
+    worker.begin_foreground()
+    assert worker.snapshot()["target_workers"] == 1
+
+    worker.end_foreground()
+    assert worker.snapshot()["target_workers"] == 2

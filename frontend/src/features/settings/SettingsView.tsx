@@ -10,7 +10,7 @@ import ScanReportLine, { getReportRates } from '../../components/ScanReportLine'
 import { ChangePasswordModal } from '../auth/ChangePasswordModal'
 import { UserManagementSection } from '../auth/UserManagementSection'
 import { useAuth } from '../auth/AuthContext'
-import { getDisplayPathPrefix, updateDisplayPathPrefix } from '../../api'
+import { getDisplayPathPrefix, startBulkThumbnails, stopBulkThumbnails, updateDisplayPathPrefix } from '../../api'
 
 function fmtRate(val: number | undefined): string {
   if (val == null || val <= 0) return '0'
@@ -92,6 +92,7 @@ interface Props {
   canRescan: boolean
   canFullScan: boolean
   canSeeDelta: boolean
+  refreshStats: () => void
   rescan: (rebuild: boolean, useDelta?: boolean) => Promise<boolean>
   openFullRescanModal: () => void
   /** Bubble a transient global notice (e.g. "Password updated") up to the
@@ -107,6 +108,7 @@ export default function SettingsView({
   canRescan,
   canFullScan,
   canSeeDelta,
+  refreshStats,
   rescan,
   openFullRescanModal,
   onGlobalNotice,
@@ -116,7 +118,12 @@ export default function SettingsView({
   const [pathPrefix, setPathPrefix] = useState('')
   const [pathPrefixLoading, setPathPrefixLoading] = useState(true)
   const [pathPrefixSaving, setPathPrefixSaving] = useState(false)
+  const [bulkActionPending, setBulkActionPending] = useState(false)
   const isAdmin = state.user?.role === 'admin'
+  const bulkThumbs = stats?.bulk_thumbnails ?? null
+  const bulkState = bulkThumbs?.state ?? 'stopped'
+  const bulkRunning = bulkState === 'starting' || bulkState === 'running'
+  const bulkStopping = bulkState === 'stopping'
 
   useEffect(() => {
     const controller = new AbortController()
@@ -147,6 +154,24 @@ export default function SettingsView({
       setPathPrefixSaving(false)
     }
   }, [onGlobalNotice, pathPrefix])
+
+  const controlBulkThumbnails = useCallback(async (action: 'start' | 'stop') => {
+    setBulkActionPending(true)
+    try {
+      if (action === 'start') {
+        const response = await startBulkThumbnails()
+        onGlobalNotice?.(`Thumbnail generation started with ${response.workers} workers.`)
+      } else {
+        await stopBulkThumbnails()
+        onGlobalNotice?.('Thumbnail generation stopping.')
+      }
+    } catch (e) {
+      onGlobalNotice?.(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBulkActionPending(false)
+      refreshStats()
+    }
+  }, [onGlobalNotice, refreshStats])
 
   return (
     <main id="main-content" className="settings-view">
@@ -262,6 +287,49 @@ export default function SettingsView({
             </div>
           )}
         </section>
+
+        {isAdmin && (
+          <section className="settings-card">
+            <div className="settings-header">
+              <h2>Thumbnail Warmup</h2>
+              <p className="muted">Start or stop a full-speed thumbnail pre-generation run for the current library.</p>
+            </div>
+            <div className="settings-result">
+              <div className="summary-grid">
+                <span className="summary-chip">State: {bulkState}</span>
+                <span className="summary-chip">Workers: {bulkThumbs?.workers ?? 'n/a'}</span>
+                <span className="summary-chip">Active limit: {bulkThumbs?.target_workers ?? 'n/a'}</span>
+                <span className="summary-chip">Generated: {bulkThumbs?.generated ?? 0}</span>
+                <span className="summary-chip">Failed: {bulkThumbs?.failed ?? 0}</span>
+              </div>
+              <div className="settings-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void controlBulkThumbnails('start')}
+                  disabled={bulkActionPending || scanActive || bulkRunning || bulkStopping}
+                  title={scanActive ? 'Stop or finish the scan before starting thumbnail warmup' : 'Use all configured workers for thumbnail generation'}
+                >
+                  {bulkActionPending && !bulkRunning ? 'Starting…' : 'Start thumbnail warmup'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => void controlBulkThumbnails('stop')}
+                  disabled={bulkActionPending || (!bulkRunning && !bulkStopping)}
+                >
+                  {bulkStopping ? 'Stopping…' : 'Stop thumbnail warmup'}
+                </button>
+              </div>
+              <div className="muted">
+                This admin task runs with up to {bulkThumbs?.workers ?? 0} parallel worker processes and automatically reduces its active concurrency during foreground use.
+              </div>
+              {bulkThumbs?.last_error && (
+                <div className="muted">Last error: {bulkThumbs.last_error}</div>
+              )}
+            </div>
+          </section>
+        )}
 
         <section className="settings-card">
           <div className="settings-header">

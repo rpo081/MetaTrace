@@ -186,6 +186,7 @@ function AppContent() {
         canRescan={canRescan}
         canFullScan={canFullScan}
         canSeeDelta={canSeeDelta}
+        refreshStats={refreshStats}
         rescan={rescan}
         openFullRescanModal={openFullRescanModal}
         onGlobalNotice={setNotice}

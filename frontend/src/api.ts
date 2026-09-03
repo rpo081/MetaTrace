@@ -109,6 +109,18 @@ export async function resumeRescan(): Promise<void> {
   if (!res.ok) await parseError(res)
 }
 
+export async function startBulkThumbnails(): Promise<{ started: boolean; workers: number }> {
+  const res = await fetchWithAuth('/api/thumbnails/bulk/start', { method: 'POST' })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+
+export async function stopBulkThumbnails(): Promise<{ stopped: boolean }> {
+  const res = await fetchWithAuth('/api/thumbnails/bulk/stop', { method: 'POST' })
+  if (!res.ok) await parseError(res)
+  return res.json()
+}
+
 export async function getRescanDelta(signal?: AbortSignal): Promise<RescanDeltaResponse> {
   const res = await fetchWithAuth('/api/rescan-delta', { signal })
   if (!res.ok) await parseError(res)

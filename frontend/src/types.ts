@@ -112,6 +112,18 @@ export interface RescanDeltaResponse {
   message?: string
 }
 
+export interface ThumbnailWorkerStats {
+  state: string
+  generated: number
+  failed: number
+}
+
+export interface BulkThumbnailWorkerStats extends ThumbnailWorkerStats {
+  workers: number
+  target_workers: number
+  last_error: string | null
+}
+
 export interface Stats {
   indexed: number
   db_count: number
@@ -125,6 +137,8 @@ export interface Stats {
   thumbs_count: number
   thumbs_size_mb: number | null
   thumbs_max_files: number
+  idle_thumbnails?: ThumbnailWorkerStats | null
+  bulk_thumbnails?: BulkThumbnailWorkerStats | null
   state: string
   last_report: ScanReport | null
   inventory_source?: 'snapshot' | 'walk' | null

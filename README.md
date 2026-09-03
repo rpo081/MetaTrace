@@ -279,6 +279,8 @@ Environment variables (or `.env`, see `.env.example`):
 | `IDLE_THUMBNAIL_GRACE_SEC` / `METATRACE_IDLE_THUMBNAIL_GRACE_SEC` | `15` | quiet period after foreground activity before background generation starts |
 | `IDLE_THUMBNAIL_DELAY_MS` / `METATRACE_IDLE_THUMBNAIL_DELAY_MS` | `300` | delay between background thumbnails (`0` disables throttling) |
 | `IDLE_THUMBNAIL_QUERY_BATCH` / `METATRACE_IDLE_THUMBNAIL_QUERY_BATCH` | `100` | newest-first database keyset page size |
+| `ADMIN_THUMBNAIL_WORKERS` / `METATRACE_ADMIN_THUMBNAIL_WORKERS` | `6` | worker processes used by the admin-started bulk thumbnail warmup task; defaults to `min(6, cpu_count)` |
+| `ADMIN_THUMBNAIL_FOREGROUND_WORKERS` / `METATRACE_ADMIN_THUMBNAIL_FOREGROUND_WORKERS` | `2` | active worker limit for the admin bulk thumbnail task during foreground user traffic or cooldown |
 | `SNAPSHOT_MAX_AGE_HOURS` / `METATRACE_SNAPSHOT_MAX_AGE_HOURS` | `24` | store snapshot staleness threshold (`0`=never stale); stale triggers filesystem walk |
 | `MAX_BROWSE_LIMIT` | `200` | max `limit` for `GET /api/images` (capped on server) |
 | `METATRACE_COOKIE_SECURE` | `auto` | `Secure` flag on auth cookies: `auto`= `https`→Secure, `http`→not (default, works for local dev); `true`/`false` to force. When `METATRACE_TRUSTED_PROXY=true`, `X-Forwarded-Proto`/`Forwarded` `proto=https` is honoured so TLS-terminating proxies still get Secure |

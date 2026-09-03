@@ -11,12 +11,16 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .file_rules import ALLOWED_EXTENSIONS
+
+
+DEFAULT_ADMIN_THUMBNAIL_WORKERS = max(1, min(6, os.cpu_count() or 1))
 
 
 class Settings(BaseSettings):
@@ -94,6 +98,23 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("METATRACE_IDLE_THUMBNAIL_QUERY_BATCH", "IDLE_THUMBNAIL_QUERY_BATCH"),
         ge=1,
         le=1000,
+    )
+    admin_thumbnail_workers: int = Field(
+        default=DEFAULT_ADMIN_THUMBNAIL_WORKERS,
+        validation_alias=AliasChoices("METATRACE_ADMIN_THUMBNAIL_WORKERS", "ADMIN_THUMBNAIL_WORKERS"),
+        ge=1,
+        le=64,
+        description="Parallel worker processes for admin-started bulk thumbnail generation.",
+    )
+    admin_thumbnail_foreground_workers: int = Field(
+        default=2,
+        validation_alias=AliasChoices(
+            "METATRACE_ADMIN_THUMBNAIL_FOREGROUND_WORKERS",
+            "ADMIN_THUMBNAIL_FOREGROUND_WORKERS",
+        ),
+        ge=1,
+        le=8,
+        description="Bulk thumbnail worker limit while foreground user activity is present or still cooling down.",
     )
     snapshot_max_age_hours: int = Field(
         default=24,

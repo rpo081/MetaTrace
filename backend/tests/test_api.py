@@ -422,6 +422,54 @@ def test_rescan_pause_resume_conflicts(client, monkeypatch):
     assert resumed.status_code == 409
 
 
+def test_bulk_thumbnail_routes(client, monkeypatch):
+    start_calls = []
+    stop_calls = []
+
+    monkeypatch.setattr(client.app.state.bulk_thumbnail_worker, "start", lambda: start_calls.append(True) or True)
+    monkeypatch.setattr(client.app.state.bulk_thumbnail_worker, "stop", lambda: stop_calls.append(True) or True)
+    monkeypatch.setattr(client.app.state.bulk_thumbnail_worker, "snapshot", lambda: {"workers": 6})
+
+    started = client.post("/api/thumbnails/bulk/start")
+    stopped = client.post("/api/thumbnails/bulk/stop")
+
+    assert started.status_code == 202
+    assert started.json() == {"started": True, "workers": 6}
+    assert stopped.status_code == 202
+    assert stopped.json() == {"stopped": True}
+    assert start_calls == [True]
+    assert stop_calls == [True]
+
+
+def test_bulk_thumbnail_route_conflicts(client, monkeypatch):
+    def raise_scan_active():
+        raise RuntimeError("scan_active")
+
+    monkeypatch.setattr(client.app.state.bulk_thumbnail_worker, "start", raise_scan_active)
+    monkeypatch.setattr(client.app.state.bulk_thumbnail_worker, "stop", lambda: False)
+
+    started = client.post("/api/thumbnails/bulk/start")
+    stopped = client.post("/api/thumbnails/bulk/stop")
+
+    assert started.status_code == 409
+    assert "scan is idle" in started.json()["detail"]
+    assert stopped.status_code == 409
+
+
+def test_stats_include_bulk_thumbnail_snapshot(client, monkeypatch):
+    monkeypatch.setattr(
+        client.app.state.bulk_thumbnail_worker,
+        "snapshot",
+        lambda: {"state": "running", "generated": 12, "failed": 1, "workers": 6, "last_error": None},
+    )
+
+    response = client.get("/api/stats")
+
+    assert response.status_code == 200
+    assert response.json()["bulk_thumbnails"]["workers"] == 6
+    assert response.json()["bulk_thumbnails"]["state"] == "running"
+
+
 def test_startup_exposes_paused_state_from_resume_checkpoint(tmp_path, monkeypatch):
     app, settings = _minimal_app(tmp_path, _monkeypatch=monkeypatch)
     settings.ensure_dirs()

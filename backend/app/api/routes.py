@@ -181,6 +181,7 @@ def stats(
     snap_age, snap_stale = _snapshot_age_sec(s)
     thumbs_count, thumbs_mb = _thumbs_stats(s)
     thumbnail_worker = getattr(st, "thumbnail_worker", None)
+    bulk_thumbnail_worker = getattr(st, "bulk_thumbnail_worker", None)
     return {
         "indexed": st.indexer.count,
         "db_count": db.count(s.db_path),
@@ -195,6 +196,7 @@ def stats(
         "thumbs_size_mb": thumbs_mb,
         "thumbs_max_files": s.thumbs_max_files,
         "idle_thumbnails": thumbnail_worker.snapshot() if thumbnail_worker is not None else None,
+        "bulk_thumbnails": bulk_thumbnail_worker.snapshot() if bulk_thumbnail_worker is not None else None,
         "state": st.indexer.status["state"],
         "last_report": st.indexer.status["last_report"],
         "inventory_source": st.indexer.status.get("inventory_source"),
@@ -749,3 +751,38 @@ def resume_rescan(
     if not ok:
         raise HTTPException(409, "scan is not paused")
     return {"resumed": True}
+
+
+@router.post("/thumbnails/bulk/start", status_code=202)
+def start_bulk_thumbnails(
+    request: Request,
+    user=Depends(require_role("admin")),
+) -> dict:
+    _check_rate_limit(request, "10/minute")
+    worker = getattr(request.app.state, "bulk_thumbnail_worker", None)
+    if worker is None:
+        raise HTTPException(503, "thumbnail worker unavailable")
+    try:
+        started = worker.start()
+    except RuntimeError as exc:
+        if str(exc) == "scan_active":
+            raise HTTPException(409, "thumbnail generation can only start while scan is idle") from None
+        raise
+    if not started:
+        raise HTTPException(409, "thumbnail generation is already running")
+    return {"started": True, "workers": worker.snapshot()["workers"]}
+
+
+@router.post("/thumbnails/bulk/stop", status_code=202)
+def stop_bulk_thumbnails(
+    request: Request,
+    user=Depends(require_role("admin")),
+) -> dict:
+    _check_rate_limit(request, "10/minute")
+    worker = getattr(request.app.state, "bulk_thumbnail_worker", None)
+    if worker is None:
+        raise HTTPException(503, "thumbnail worker unavailable")
+    stopped = worker.stop()
+    if not stopped:
+        raise HTTPException(409, "thumbnail generation is not running")
+    return {"stopped": True}

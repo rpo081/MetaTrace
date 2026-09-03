@@ -24,6 +24,8 @@ services:
       IDLE_THUMBNAIL_GRACE_SEC: ${IDLE_THUMBNAIL_GRACE_SEC:-15}
       IDLE_THUMBNAIL_DELAY_MS: ${IDLE_THUMBNAIL_DELAY_MS:-300}
       IDLE_THUMBNAIL_QUERY_BATCH: ${IDLE_THUMBNAIL_QUERY_BATCH:-100}
+      ADMIN_THUMBNAIL_WORKERS: ${ADMIN_THUMBNAIL_WORKERS:-6}
+      ADMIN_THUMBNAIL_FOREGROUND_WORKERS: ${ADMIN_THUMBNAIL_FOREGROUND_WORKERS:-2}
       # PSD composite pixel cap (OOM guard for huge renders).
       METATRACE_MAX_PIXELS: ${METATRACE_MAX_PIXELS:-100000000}
       # Auth: legacy admin token (must be >=32 chars if set) + JWT. Empty admin_token + ALLOW_UNAUTH=false => 401 on mutations (not open).
