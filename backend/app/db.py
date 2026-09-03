@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -19,6 +20,11 @@ CREATE TABLE IF NOT EXISTS images (
     width         INTEGER,
     height        INTEGER,
     xmp           TEXT NOT NULL DEFAULT '{}',
+    xmp_search    TEXT NOT NULL DEFAULT '',
+    xmp_creator   TEXT NOT NULL DEFAULT '',
+    xmp_description TEXT NOT NULL DEFAULT '',
+    xmp_keywords  TEXT NOT NULL DEFAULT '',
+    xmp_has_data  INTEGER NOT NULL DEFAULT 0,
     indexed_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE TABLE IF NOT EXISTS kv (
@@ -91,6 +97,238 @@ class ThumbnailCandidate:
     indexed_at: str
 
 
+_SEARCH_TOKEN_RE = re.compile(r"[0-9A-Za-z]+")
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_XMP_CREATOR_FIELDS = frozenset({"artist", "author", "byline", "creator"})
+_XMP_DESCRIPTION_FIELDS = frozenset({"caption", "description", "headline", "title"})
+_XMP_KEYWORD_FIELDS = frozenset({
+    "category",
+    "hierarchicalsubject",
+    "keywords",
+    "subject",
+    "supplementalcategories",
+})
+_FTS_TEXT_COLUMNS = (
+    "rel_path",
+    "original_path",
+    "xmp_search",
+    "xmp_creator",
+    "xmp_description",
+    "xmp_keywords",
+)
+
+
+def _append_search_variant(parts: list[str], text: str | None, *, split_camel: bool = False) -> None:
+    if text is None:
+        return
+    raw = str(text).strip()
+    if not raw:
+        return
+    parts.append(raw)
+    normalized = raw.replace("\\", " ").replace("/", " ").replace(":", " ").replace("-", " ").replace("_", " ")
+    if split_camel:
+        normalized = _CAMEL_SPLIT_RE.sub(" ", normalized)
+    normalized = " ".join(normalized.split())
+    if normalized and normalized.lower() != raw.lower():
+        parts.append(normalized)
+
+
+def _flatten_xmp_values(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        values: list[str] = []
+        for nested in value.values():
+            values.extend(_flatten_xmp_values(nested))
+        return values
+    if isinstance(value, (list, tuple, set)):
+        values = []
+        for nested in value:
+            values.extend(_flatten_xmp_values(nested))
+        return values
+    return [str(value)]
+
+
+def _dedupe_texts(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        cleaned = str(value).strip()
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+    return out
+
+
+def _xmp_attr_tail(name: str) -> str:
+    tail = str(name).rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    return tail.strip().lower()
+
+
+def _derive_xmp_search_fields(xmp: dict) -> dict[str, object]:
+    if not isinstance(xmp, dict) or not xmp:
+        return {
+            "xmp_search": "",
+            "xmp_creator": "",
+            "xmp_description": "",
+            "xmp_keywords": "",
+            "xmp_has_data": 0,
+        }
+
+    search_parts: list[str] = []
+    creators: list[str] = []
+    descriptions: list[str] = []
+    keywords: list[str] = []
+
+    for key, value in xmp.items():
+        key_text = str(key).strip()
+        if key_text:
+            _append_search_variant(search_parts, key_text, split_camel=True)
+        value_texts = _flatten_xmp_values(value)
+        for value_text in value_texts:
+            _append_search_variant(search_parts, value_text)
+
+        tail = _xmp_attr_tail(key_text)
+        if tail in _XMP_CREATOR_FIELDS:
+            creators.extend(value_texts)
+        if tail in _XMP_DESCRIPTION_FIELDS:
+            descriptions.extend(value_texts)
+        if tail in _XMP_KEYWORD_FIELDS:
+            keywords.extend(value_texts)
+
+    creator_text = " | ".join(_dedupe_texts(creators))
+    description_text = " | ".join(_dedupe_texts(descriptions))
+    keyword_text = " | ".join(_dedupe_texts(keywords))
+    for special in (creator_text, description_text, keyword_text):
+        _append_search_variant(search_parts, special)
+
+    return {
+        "xmp_search": " ".join(_dedupe_texts(search_parts)),
+        "xmp_creator": creator_text,
+        "xmp_description": description_text,
+        "xmp_keywords": keyword_text,
+        "xmp_has_data": 1,
+    }
+
+
+def _fts_table_exists(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'images_fts'"
+    ).fetchone()
+    return row is not None
+
+
+def _ensure_images_schema(conn: sqlite3.Connection) -> bool:
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(images)")}
+    added = False
+    for name, ddl in (
+        ("xmp_search", "TEXT NOT NULL DEFAULT ''"),
+        ("xmp_creator", "TEXT NOT NULL DEFAULT ''"),
+        ("xmp_description", "TEXT NOT NULL DEFAULT ''"),
+        ("xmp_keywords", "TEXT NOT NULL DEFAULT ''"),
+        ("xmp_has_data", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name in cols:
+            continue
+        conn.execute(f"ALTER TABLE images ADD COLUMN {name} {ddl}")
+        added = True
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_images_xmp_has_data ON images(xmp_has_data)")
+    return added
+
+
+def _backfill_xmp_search_fields(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("SELECT id, xmp FROM images").fetchall()
+    for row in rows:
+        raw = row["xmp"]
+        if isinstance(raw, str):
+            try:
+                xmp = json.loads(raw) if raw else {}
+            except Exception:
+                xmp = {}
+        else:
+            xmp = raw if isinstance(raw, dict) else {}
+        derived = _derive_xmp_search_fields(xmp)
+        conn.execute(
+            """
+            UPDATE images
+            SET xmp_search = ?,
+                xmp_creator = ?,
+                xmp_description = ?,
+                xmp_keywords = ?,
+                xmp_has_data = ?
+            WHERE id = ?
+            """,
+            (
+                derived["xmp_search"],
+                derived["xmp_creator"],
+                derived["xmp_description"],
+                derived["xmp_keywords"],
+                derived["xmp_has_data"],
+                int(row["id"]),
+            ),
+        )
+
+
+def _ensure_fts_schema(conn: sqlite3.Connection) -> bool:
+    if _fts_table_exists(conn):
+        table_created = False
+    else:
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE images_fts USING fts5(
+                rel_path,
+                original_path,
+                xmp_search,
+                xmp_creator,
+                xmp_description,
+                xmp_keywords,
+                content='images',
+                content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )
+            """
+        )
+        table_created = True
+
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS images_fts_ai AFTER INSERT ON images BEGIN
+            INSERT INTO images_fts(rowid, rel_path, original_path, xmp_search, xmp_creator, xmp_description, xmp_keywords)
+            VALUES (new.id, new.rel_path, new.original_path, new.xmp_search, new.xmp_creator, new.xmp_description, new.xmp_keywords);
+        END;
+        CREATE TRIGGER IF NOT EXISTS images_fts_ad AFTER DELETE ON images BEGIN
+            INSERT INTO images_fts(images_fts, rowid, rel_path, original_path, xmp_search, xmp_creator, xmp_description, xmp_keywords)
+            VALUES ('delete', old.id, old.rel_path, old.original_path, old.xmp_search, old.xmp_creator, old.xmp_description, old.xmp_keywords);
+        END;
+        CREATE TRIGGER IF NOT EXISTS images_fts_au AFTER UPDATE ON images BEGIN
+            INSERT INTO images_fts(images_fts, rowid, rel_path, original_path, xmp_search, xmp_creator, xmp_description, xmp_keywords)
+            VALUES ('delete', old.id, old.rel_path, old.original_path, old.xmp_search, old.xmp_creator, old.xmp_description, old.xmp_keywords);
+            INSERT INTO images_fts(rowid, rel_path, original_path, xmp_search, xmp_creator, xmp_description, xmp_keywords)
+            VALUES (new.id, new.rel_path, new.original_path, new.xmp_search, new.xmp_creator, new.xmp_description, new.xmp_keywords);
+        END;
+        """
+    )
+    return table_created
+
+
+def _search_terms(text: str) -> list[str]:
+    return [term.lower() for term in _SEARCH_TOKEN_RE.findall(text or "") if term]
+
+
+def _build_fts_query(text: str, *, columns: Sequence[str]) -> str | None:
+    terms = _search_terms(text)
+    if not terms:
+        return None
+    groups = []
+    for term in terms:
+        groups.append("(" + " OR ".join(f"{column}:{term}*" for column in columns) + ")")
+    return " AND ".join(groups)
+
+
 def _filename_of(path: str | None) -> str:
     if not path:
         return ""
@@ -146,6 +384,16 @@ def init_db(db_path: Path, *, configure_journal: bool = True) -> None:
             conn.execute(
                 "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
             )
+        derived_added = _ensure_images_schema(conn)
+        if derived_added:
+            _backfill_xmp_search_fields(conn)
+        try:
+            fts_created = _ensure_fts_schema(conn)
+        except sqlite3.OperationalError:
+            fts_created = False
+        else:
+            if derived_added or fts_created:
+                conn.execute("INSERT INTO images_fts(images_fts) VALUES ('rebuild')")
 
 
 def reset(db_path: Path) -> None:
@@ -205,11 +453,12 @@ def upsert_image(
     xmp: dict,
 ) -> int:
     """Insert or update an image row and return its id."""
+    derived = _derive_xmp_search_fields(xmp)
     with closing(connect(db_path)) as conn, conn:
         conn.execute(
             """
-            INSERT INTO images (rel_path, original_path, size, mtime, sha256, width, height, xmp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO images (rel_path, original_path, size, mtime, sha256, width, height, xmp, xmp_search, xmp_creator, xmp_description, xmp_keywords, xmp_has_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(rel_path) DO UPDATE SET
                 original_path=excluded.original_path,
                 size=excluded.size,
@@ -218,10 +467,20 @@ def upsert_image(
                 width=excluded.width,
                 height=excluded.height,
                 xmp=excluded.xmp,
+                xmp_search=excluded.xmp_search,
+                xmp_creator=excluded.xmp_creator,
+                xmp_description=excluded.xmp_description,
+                xmp_keywords=excluded.xmp_keywords,
+                xmp_has_data=excluded.xmp_has_data,
                 indexed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
             """,
             (rel_path, original_path, size, mtime, sha256, width, height,
-             json.dumps(xmp, ensure_ascii=False)),
+             json.dumps(xmp, ensure_ascii=False),
+             derived["xmp_search"],
+             derived["xmp_creator"],
+             derived["xmp_description"],
+             derived["xmp_keywords"],
+             derived["xmp_has_data"]),
         )
         row = conn.execute("SELECT id FROM images WHERE rel_path = ?", (rel_path,)).fetchone()
     assert row is not None
@@ -244,10 +503,11 @@ def upsert_images_bulk(db_path: Path, rows: Sequence[dict]) -> dict[str, int]:
     id_by_rel: dict[str, int] = {}
     with closing(connect(db_path)) as conn, conn:
         for r in rows:
+            derived = _derive_xmp_search_fields(r.get("xmp") or {})
             conn.execute(
                 """
-                INSERT INTO images (rel_path, original_path, size, mtime, sha256, width, height, xmp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO images (rel_path, original_path, size, mtime, sha256, width, height, xmp, xmp_search, xmp_creator, xmp_description, xmp_keywords, xmp_has_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(rel_path) DO UPDATE SET
                     original_path=excluded.original_path,
                     size=excluded.size,
@@ -256,6 +516,11 @@ def upsert_images_bulk(db_path: Path, rows: Sequence[dict]) -> dict[str, int]:
                     width=excluded.width,
                     height=excluded.height,
                     xmp=excluded.xmp,
+                    xmp_search=excluded.xmp_search,
+                    xmp_creator=excluded.xmp_creator,
+                    xmp_description=excluded.xmp_description,
+                    xmp_keywords=excluded.xmp_keywords,
+                    xmp_has_data=excluded.xmp_has_data,
                     indexed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                 """,
                 (
@@ -267,6 +532,11 @@ def upsert_images_bulk(db_path: Path, rows: Sequence[dict]) -> dict[str, int]:
                     r.get("width"),
                     r.get("height"),
                     json.dumps(r.get("xmp") or {}, ensure_ascii=False),
+                    derived["xmp_search"],
+                    derived["xmp_creator"],
+                    derived["xmp_description"],
+                    derived["xmp_keywords"],
+                    derived["xmp_has_data"],
                 ),
             )
         for i in range(0, len(rel_paths), _ID_FETCH_SLICE):
@@ -526,41 +796,47 @@ def browse_images(
             params.append(pattern)
     # --- xmp text (match within XMP metadata tags only) ---
     xmp_query = filters.get("xmp") if filters.get("xmp") is not None else (filters.get("xmp_query") or filters.get("xmp_tag"))
-    if xmp_query is not None and str(xmp_query).strip():
-        xmp_terms = [t.strip() for t in str(xmp_query).strip().split() if t.strip()]
-        for term in xmp_terms:
-            escaped = escape_like(term)
-            pattern = f"%{escaped}%"
-            where_clauses.append("xmp LIKE ? ESCAPE '\\'")
-            params.append(pattern)
     # --- has_xmp ---
     if filters.get("has_xmp"):
-        where_clauses.append("xmp != '{}'")
+        where_clauses.append("xmp_has_data = 1")
 
     # Validate sort early (needed for cursor eligibility)
     if sort not in _VALID_SORT_COLUMNS:
         sort = "indexed_at"
     order_upper = "DESC" if order.lower() == "desc" else "ASC"
 
-    # Snapshot base filter state before cursor clause for total count
-    base_clauses = list(where_clauses)
-    base_params = list(params)
-
-    decoded = _decode_cursor(cursor) if cursor else None
-    use_cursor = decoded is not None and sort == "indexed_at"
-    if use_cursor and decoded:
-        cursor_at, cursor_id = decoded
-        # Tuple comparison uses composite index idx_images_indexed_at_id
-        if order.lower() == "desc":
-            where_clauses.append("(indexed_at, id) < (?, ?)")
-        else:
-            where_clauses.append("(indexed_at, id) > (?, ?)")
-        params.extend([cursor_at, cursor_id])
-
-    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-    base_sql = " AND ".join(base_clauses) if base_clauses else "1=1"
-
     with closing(connect(db_path)) as conn:
+        if xmp_query is not None and str(xmp_query).strip():
+            fts_query = _build_fts_query(str(xmp_query), columns=("xmp_search", "xmp_creator", "xmp_description", "xmp_keywords"))
+            if fts_query and _fts_table_exists(conn):
+                where_clauses.append("id IN (SELECT rowid FROM images_fts WHERE images_fts MATCH ?)")
+                params.append(fts_query)
+            else:
+                xmp_terms = [t.strip() for t in str(xmp_query).strip().split() if t.strip()]
+                for term in xmp_terms:
+                    escaped = escape_like(term)
+                    pattern = f"%{escaped}%"
+                    where_clauses.append("xmp LIKE ? ESCAPE '\\'")
+                    params.append(pattern)
+
+        # Snapshot base filter state before cursor clause for total count
+        base_clauses = list(where_clauses)
+        base_params = list(params)
+
+        decoded = _decode_cursor(cursor) if cursor else None
+        use_cursor = decoded is not None and sort == "indexed_at"
+        if use_cursor and decoded:
+            cursor_at, cursor_id = decoded
+            # Tuple comparison uses composite index idx_images_indexed_at_id
+            if order.lower() == "desc":
+                where_clauses.append("(indexed_at, id) < (?, ?)")
+            else:
+                where_clauses.append("(indexed_at, id) > (?, ?)")
+            params.extend([cursor_at, cursor_id])
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+        base_sql = " AND ".join(base_clauses) if base_clauses else "1=1"
+
         total = int(
             conn.execute(f"SELECT COUNT(*) AS n FROM images WHERE {base_sql}", tuple(base_params)).fetchone()["n"]
         )
@@ -626,22 +902,35 @@ def search_by_text(db_path: Path, q: str, limit: int = 100):  # -> list[ImageDTO
     if not terms:
         return []
 
-    where_clauses = []
-    params: list[object] = []
-    for term in terms:
-        escaped = escape_like(term)
-        pattern = f"%{escaped}%"
-        where_clauses.append("(rel_path LIKE ? ESCAPE '\\' OR original_path LIKE ? ESCAPE '\\' OR xmp LIKE ? ESCAPE '\\')")
-        params.extend([pattern, pattern, pattern])
-
-    where_sql = " AND ".join(where_clauses)
-    sql = f"SELECT * FROM images WHERE {where_sql} ORDER BY id DESC LIMIT ?"
-    params.append(limit)
-
     from .models.scan import row_to_dto
 
     with closing(connect(db_path)) as conn:
-        rows = conn.execute(sql, tuple(params)).fetchall()
+        fts_query = _build_fts_query(q, columns=_FTS_TEXT_COLUMNS)
+        if fts_query and _fts_table_exists(conn):
+            rows = conn.execute(
+                """
+                SELECT images.*
+                FROM images
+                JOIN images_fts ON images_fts.rowid = images.id
+                WHERE images_fts MATCH ?
+                ORDER BY bm25(images_fts), images.id DESC
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            ).fetchall()
+        else:
+            where_clauses = []
+            params: list[object] = []
+            for term in terms:
+                escaped = escape_like(term)
+                pattern = f"%{escaped}%"
+                where_clauses.append("(rel_path LIKE ? ESCAPE '\\' OR original_path LIKE ? ESCAPE '\\' OR xmp LIKE ? ESCAPE '\\')")
+                params.extend([pattern, pattern, pattern])
+
+            where_sql = " AND ".join(where_clauses)
+            sql = f"SELECT * FROM images WHERE {where_sql} ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
     return [row_to_dto(r) for r in rows]
 
 

@@ -1,9 +1,8 @@
-import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../../../api'
-import { AuthProvider, type AuthApi } from '../AuthContext'
+import { type AuthApi } from '../AuthContext'
 import { LoginPage } from '../LoginPage'
 
 // A minimal stub AuthContext for testing LoginPage in isolation — LoginPage
@@ -37,16 +36,16 @@ afterEach(() => {
 })
 
 function renderLogin() {
-  // Wrap with AuthProvider so RequireAuth / Context types resolve — the
-  // mock above short-circuits useAuth regardless.
-  return render(
-    <AuthProvider>
-      <LoginPage />
-    </AuthProvider>,
-  )
+  return render(<LoginPage />)
 }
 
 describe('LoginPage', () => {
+  async function submit() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /sign in/i }))
+    })
+  }
+
   it('renders_username_and_password_fields', () => {
     renderLogin()
     expect(document.querySelector('.login-version')).toHaveTextContent(/\S/)
@@ -64,10 +63,9 @@ describe('LoginPage', () => {
     authApiMock.login.mockRejectedValueOnce(new ApiError(401, 'invalid credentials'))
     renderLogin()
 
-    const user = userEvent.setup()
-    await user.type(screen.getByLabelText(/username/i), 'alice')
-    await user.type(screen.getByLabelText(/password/i), 'bad')
-    await user.click(screen.getByRole('button', { name: /sign in/i }))
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'bad' } })
+    await submit()
 
     expect(await screen.findByText(/invalid username or password/i)).toBeInTheDocument()
   })
@@ -76,21 +74,20 @@ describe('LoginPage', () => {
     authApiMock.login.mockResolvedValueOnce(undefined)
     renderLogin()
 
-    const user = userEvent.setup()
-    await user.type(screen.getByLabelText(/username/i), 'alice')
-    await user.type(screen.getByLabelText(/password/i), 'Good-Password-123')
-    await user.click(screen.getByRole('button', { name: /sign in/i }))
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'Good-Password-123' } })
+    await submit()
 
-    expect(authApiMock.login).toHaveBeenCalledWith('alice', 'Good-Password-123')
+    await waitFor(() => expect(authApiMock.login).toHaveBeenCalledWith('alice', 'Good-Password-123'))
+    expect(screen.getByRole('button', { name: /signing in/i })).toBeDisabled()
   })
 
   it('lockout_message_for_423', async () => {
     authApiMock.login.mockRejectedValueOnce(new ApiError(423, 'locked'))
     renderLogin()
-    const user = userEvent.setup()
-    await user.type(screen.getByLabelText(/username/i), 'a')
-    await user.type(screen.getByLabelText(/password/i), 'b')
-    await user.click(screen.getByRole('button', { name: /sign in/i }))
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'a' } })
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'b' } })
+    await submit()
     expect(await screen.findByText(/account temporarily locked/i)).toBeInTheDocument()
   })
 })

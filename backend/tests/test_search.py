@@ -139,6 +139,26 @@ def test_text_search_with_xmp_and_path(tmp_path, monkeypatch):
     assert out_combined["results"][0]["source"] == "both"
 
 
+def test_text_search_matches_xmp_tag_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(indexer_mod.embeddings, "embed_images", _fake_embed)
+    monkeypatch.setattr(indexer_mod.metadata, "extract_xmp", lambda paths: {
+        str(p): {"TransmissionReference": "Mars Shot", "Creator": "Jane Doe"} if "alpha.png" in str(p) else {}
+        for p in paths
+    })
+    store = tmp_path / "tag_store"
+    store.mkdir()
+    s = Settings(store_path=store, data_path=tmp_path / "tag_data", run_initial_scan_on_start=False)
+    p1 = store / "alpha.png"
+    Image.new("RGB", (8, 8), (100, 100, 100)).save(p1)
+
+    ix = indexer_mod.Indexer(s)
+    ix.incremental(trigger="test_tag_names")
+    svc = search_mod.SearchService(ix, s)
+
+    out = svc.search(image_bytes=None, k=5, min_score=0.0, q="TransmissionReference")
+    assert [row["rel_path"] for row in out["results"]] == ["alpha.png"]
+
+
 def test_or_mode_unions_text_and_image_results(tmp_path, monkeypatch):
     monkeypatch.setattr(indexer_mod.embeddings, "embed_images", _fake_embed)
     monkeypatch.setattr(indexer_mod.metadata, "extract_xmp", lambda paths: {})

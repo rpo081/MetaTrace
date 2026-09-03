@@ -93,6 +93,53 @@ def test_bulk_upsert_spans_id_fetch_slices(tmp_path):
     assert all(ids[r["rel_path"]] > 0 for r in rows)
 
 
+def test_init_db_backfills_xmp_search_fields_and_fts(tmp_path):
+    p = tmp_path / "legacy.db"
+    with sqlite3.connect(p) as conn:
+        conn.execute(
+            """
+            CREATE TABLE images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rel_path TEXT NOT NULL UNIQUE,
+                original_path TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                mtime REAL NOT NULL,
+                sha256 TEXT,
+                width INTEGER,
+                height INTEGER,
+                xmp TEXT NOT NULL DEFAULT '{}',
+                indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO images (rel_path, original_path, size, mtime, sha256, width, height, xmp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy/a.png",
+                "legacy/a.png",
+                1,
+                1.0,
+                None,
+                8,
+                8,
+                '{"TransmissionReference": "Mars Shot", "Creator": "Jane Doe", "Subject": ["Mars", "Launch"]}',
+            ),
+        )
+
+    db.init_db(p, configure_journal=False)
+
+    with db.connect(p) as conn:
+        row = conn.execute(
+            "SELECT xmp_creator, xmp_keywords, xmp_has_data FROM images WHERE rel_path = 'legacy/a.png'"
+        ).fetchone()
+        assert row["xmp_creator"] == "Jane Doe"
+        assert "Mars" in row["xmp_keywords"]
+        assert row["xmp_has_data"] == 1
+
+    rels = [row.rel_path for row in db.search_by_text(p, "TransmissionReference")]
+    assert rels == ["legacy/a.png"]
+
+
 def test_reset(tmp_path):
     p = tmp_path / "r.db"
     db.init_db(p)

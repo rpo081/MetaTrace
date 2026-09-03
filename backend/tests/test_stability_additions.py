@@ -273,6 +273,29 @@ def test_browse_xmp_tag_filter(api_client):
     assert not any(i["rel_path"] == "xmp_dir/sample.png" for i in r_dir.json()["items"])
 
 
+def test_browse_xmp_tag_filter_matches_camel_case_tag_names(api_client):
+    s = api_client.app.state.settings
+    db.upsert_image(
+        s.db_path,
+        rel_path="xmp_dir/reference.png",
+        original_path=r"\\nas\xmp_dir\reference.png",
+        size=10,
+        mtime=10.0,
+        sha256=None,
+        width=10,
+        height=10,
+        xmp={"TransmissionReference": "Mars Shot", "Description": "Mission render"},
+    )
+
+    exact = api_client.get("/api/images", params={"xmp": "TransmissionReference"})
+    assert exact.status_code == 200
+    assert any(i["rel_path"] == "xmp_dir/reference.png" for i in exact.json()["items"])
+
+    split = api_client.get("/api/images", params={"xmp": "transmission reference"})
+    assert split.status_code == 200
+    assert any(i["rel_path"] == "xmp_dir/reference.png" for i in split.json()["items"])
+
+
 def test_browse_has_xmp(api_client):
     s = api_client.app.state.settings
     db.upsert_image(s.db_path, rel_path="with_xmp.png", original_path=r"\\nas\with_xmp.png", size=10, mtime=10.0, sha256=None, width=10, height=10, xmp={"Title": "t"})
