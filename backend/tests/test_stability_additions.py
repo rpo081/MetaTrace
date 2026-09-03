@@ -361,6 +361,13 @@ def test_thumbs_max_files_validator():
         Settings(thumbs_max_files=-1)
 
 
+def test_thumbs_prune_buffer_validator():
+    s = Settings(thumbs_prune_buffer=0)
+    assert s.thumbs_prune_buffer == 0
+    with pytest.raises(Exception):
+        Settings(thumbs_prune_buffer=-1)
+
+
 def test_snapshot_max_age_validator():
     s = Settings(snapshot_max_age_hours=0)
     assert s.snapshot_max_age_hours == 0

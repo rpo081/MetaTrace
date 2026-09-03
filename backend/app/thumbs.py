@@ -27,6 +27,14 @@ def _generation_lock(path: Path) -> threading.Lock:
     return _generation_locks[hash(path) % len(_generation_locks)]
 
 
+def _prune_trigger_limit(settings, *, max_files: int | None = None) -> int:
+    cap = max_files if max_files is not None else getattr(settings, "thumbs_max_files", 0)
+    if not cap or cap <= 0:
+        return 0
+    buffer = max(0, int(getattr(settings, "thumbs_prune_buffer", 0)))
+    return cap + buffer
+
+
 def _load_thumbnail_source(source: Path):
     try:
         with Image.open(source) as original:
@@ -197,12 +205,12 @@ class BulkThumbnailWorker:
         return sum(1 for _ in self.settings.thumbs_dir.glob("*.png"))
 
     def _remaining_capacity(self, pending_count: int) -> int | None:
-        cap = self.settings.thumbs_max_files
-        if not cap:
+        trigger_limit = _prune_trigger_limit(self.settings)
+        if not trigger_limit:
             return None
         if self._cache_count is None:
             self._cache_count = self._count_cached()
-        return max(0, cap - self._cache_count - pending_count)
+        return max(0, trigger_limit - self._cache_count - pending_count)
 
     def _next_candidate(self) -> db.ThumbnailCandidate | None:
         while not self._candidates and not self._exhausted:
@@ -405,12 +413,12 @@ class IdleThumbnailWorker:
             return self._cache_count if self._cache_count is not None else 0
 
     def _at_capacity(self) -> bool:
-        cap = self.settings.thumbs_max_files
-        if not cap:
+        trigger_limit = _prune_trigger_limit(self.settings)
+        if not trigger_limit:
             return False
         if self._cache_count is None:
             self._cache_count = self._count_cached()
-        return self._cache_count >= cap
+        return self._cache_count >= trigger_limit
 
     def _next_candidate(self) -> db.ThumbnailCandidate | None:
         while not self._candidates and not self._exhausted:
@@ -525,6 +533,7 @@ def prune_thumb_cache(settings, *, max_files: int | None = None) -> int:
     cap = max_files if max_files is not None else getattr(settings, "thumbs_max_files", 0)
     if not cap or cap <= 0:
         return 0
+    trigger_limit = _prune_trigger_limit(settings, max_files=max_files)
     try:
         with _prune_lock:
             thumbs_dir = settings.thumbs_dir
@@ -536,7 +545,7 @@ def prune_thumb_cache(settings, *, max_files: int | None = None) -> int:
                     entries.append((path.stat().st_mtime, path))
                 except FileNotFoundError:
                     continue
-            if len(entries) <= cap:
+            if len(entries) <= trigger_limit:
                 return 0
             entries.sort(key=lambda item: item[0])
             to_remove = len(entries) - cap
@@ -550,7 +559,7 @@ def prune_thumb_cache(settings, *, max_files: int | None = None) -> int:
                 except OSError as exc:
                     log.warning("thumb LRU prune failed for %s: %s", path.name, exc)
             if removed:
-                log.info("thumb cache LRU pruned %d file(s) (cap=%d)", removed, cap)
+                log.info("thumb cache LRU pruned %d file(s) (cap=%d, trigger=%d)", removed, cap, trigger_limit)
             return removed
     except Exception:  # noqa: BLE001
         log.warning("thumb cache prune failed", exc_info=True)

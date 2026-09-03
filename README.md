@@ -275,6 +275,7 @@ Environment variables (or `.env`, see `.env.example`):
 | `METATRACE_TRUSTED_PROXY` | `false` | when `true`, rate limiting trusts `X-Forwarded-For` / `X-Real-IP` (behind nginx/traefik). Leave `false` to avoid spoofing when not behind proxy |
 | `METATRACE_JWT_SECRET` | — | HS256 signing secret for access tokens. **Required when running internet-facing.** Min 32 chars. Generate with `python -c "import secrets; print(secrets.token_urlsafe(64))"`. Unset = single-server trusted-LAN mode (X-Admin-Token + open registration) |
 | `THUMBS_MAX_FILES` / `METATRACE_THUMBS_MAX_FILES` | `100000` | max thumbnails before LRU eviction (`0`=unbounded); 100k ≈5 GB at 256 px |
+| `THUMBS_PRUNE_BUFFER` / `METATRACE_THUMBS_PRUNE_BUFFER` | `100` | extra thumbnails allowed before LRU pruning starts; e.g. `50000` cap + `100` buffer prunes only once the cache exceeds `50100`, then trims back to `50000` |
 | `IDLE_THUMBNAILS_ENABLED` / `METATRACE_IDLE_THUMBNAILS_ENABLED` | `true` | generate missing default-size thumbnails in the background while scans and foreground image requests are idle |
 | `IDLE_THUMBNAIL_GRACE_SEC` / `METATRACE_IDLE_THUMBNAIL_GRACE_SEC` | `15` | quiet period after foreground activity before background generation starts |
 | `IDLE_THUMBNAIL_DELAY_MS` / `METATRACE_IDLE_THUMBNAIL_DELAY_MS` | `300` | delay between background thumbnails (`0` disables throttling) |

@@ -83,6 +83,7 @@ def test_worker_yields_to_scan_and_foreground_activity(tmp_path):
 
 def test_worker_stops_at_cache_capacity_without_pruning(tmp_path, monkeypatch):
     settings, store, indexer = _environment(tmp_path, max_files=1)
+    settings.thumbs_prune_buffer = 0
     _add_image(settings, store, "image.png", "2026-01-01T00:00:00Z")
     existing = settings.thumbs_dir / "999_256.png"
     existing.write_bytes(b"cached")
@@ -97,6 +98,18 @@ def test_worker_stops_at_cache_capacity_without_pruning(tmp_path, monkeypatch):
     assert worker.run_once() is False
     assert worker.snapshot()["state"] == "capacity"
     assert existing.exists()
+
+
+def test_worker_allows_buffer_before_capacity(tmp_path):
+    settings, store, indexer = _environment(tmp_path, max_files=1)
+    settings.thumbs_prune_buffer = 1
+    image_id = _add_image(settings, store, "image.png", "2026-01-01T00:00:00Z")
+    existing = settings.thumbs_dir / "999_256.png"
+    existing.write_bytes(b"cached")
+    worker = thumbs.IdleThumbnailWorker(settings, indexer)
+
+    assert worker.run_once() is True
+    assert (settings.thumbs_dir / f"{image_id}_{settings.thumb_size}.png").exists()
 
 
 def test_idle_worker_yields_while_bulk_worker_runs(tmp_path):
@@ -177,6 +190,7 @@ def test_bulk_worker_reduces_target_workers_during_foreground_activity(tmp_path)
 
 def test_prune_thumb_cache_ignores_missing_files_during_stat_and_unlink(tmp_path, monkeypatch):
     settings, _, _ = _environment(tmp_path, max_files=1)
+    settings.thumbs_prune_buffer = 0
     first = settings.thumbs_dir / "1_256.png"
     second = settings.thumbs_dir / "2_256.png"
     first.write_bytes(b"a")
@@ -200,3 +214,23 @@ def test_prune_thumb_cache_ignores_missing_files_during_stat_and_unlink(tmp_path
 
     assert thumbs.prune_thumb_cache(settings, max_files=0) == 0
     assert thumbs.prune_thumb_cache(settings) == 0
+
+
+def test_prune_thumb_cache_waits_for_buffer_then_prunes_back_to_cap(tmp_path):
+    settings, _, _ = _environment(tmp_path, max_files=2)
+    settings.thumbs_prune_buffer = 1
+    first = settings.thumbs_dir / "1_256.png"
+    second = settings.thumbs_dir / "2_256.png"
+    third = settings.thumbs_dir / "3_256.png"
+    fourth = settings.thumbs_dir / "4_256.png"
+
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+    third.write_bytes(b"c")
+
+    assert thumbs.prune_thumb_cache(settings) == 0
+    assert sum(1 for _ in settings.thumbs_dir.glob("*.png")) == 3
+
+    fourth.write_bytes(b"d")
+    assert thumbs.prune_thumb_cache(settings) == 2
+    assert sum(1 for _ in settings.thumbs_dir.glob("*.png")) == 2

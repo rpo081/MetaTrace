@@ -79,6 +79,12 @@ class Settings(BaseSettings):
         ge=0,
         description="Max cached thumbnails before LRU eviction (0=unbounded). 100k ≈5GB at 256px.",
     )
+    thumbs_prune_buffer: int = Field(
+        default=100,
+        validation_alias=AliasChoices("METATRACE_THUMBS_PRUNE_BUFFER", "THUMBS_PRUNE_BUFFER"),
+        ge=0,
+        description="Extra cached thumbnails allowed before LRU pruning starts; pruning still returns to thumbs_max_files.",
+    )
     idle_thumbnails_enabled: bool = Field(
         default=True,
         validation_alias=AliasChoices("METATRACE_IDLE_THUMBNAILS_ENABLED", "IDLE_THUMBNAILS_ENABLED"),
