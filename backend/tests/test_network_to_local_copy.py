@@ -95,12 +95,33 @@ def test_render_copy_dashboard_can_include_target_path():
     assert rows[2] == "Fortschritt [-----]   0%"
 
 
-def test_draw_progress_frame_clears_and_rewrites_screen():
+def test_draw_progress_frame_writes_initial_progress_block():
     stream = io.StringIO()
 
-    mod.draw_progress_frame(["Zeile 1", "Zeile 2"], stream=stream)
+    line_count = mod.draw_progress_frame(["Zeile 1", "Zeile 2"], stream=stream)
 
-    assert stream.getvalue() == "\x1b[H\x1b[2J\x1b[HZeile 1\nZeile 2\n"
+    assert line_count == 2
+    assert stream.getvalue() == "\r\x1b[2KZeile 1\n\r\x1b[2KZeile 2\n"
+
+
+def test_draw_progress_frame_rewrites_existing_progress_block_in_place():
+    stream = io.StringIO()
+
+    line_count = mod.draw_progress_frame(["Zeile 1", "Zeile 2"], stream=stream)
+    line_count = mod.draw_progress_frame(
+        ["Neu 1", "Neu 2"],
+        previous_line_count=line_count,
+        stream=stream,
+    )
+
+    assert line_count == 2
+    assert stream.getvalue() == (
+        "\r\x1b[2KZeile 1\n"
+        "\r\x1b[2KZeile 2\n"
+        "\x1b[2F"
+        "\r\x1b[2KNeu 1\n"
+        "\r\x1b[2KNeu 2\n"
+    )
 
 
 def test_build_copy_preview_rows_matches_cleanup_report_style():

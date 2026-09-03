@@ -290,7 +290,10 @@ def edit_settings(settings: Settings, config: PresetConfig, config_path: Path) -
             )
         elif choice == 1:
             settings.dst = sm.pick_folder(
-                "Ziel (lokaler Ordner)", settings.dst, frame_width=FRAME_WIDTH
+                "Ziel (lokaler Ordner)",
+                settings.dst,
+                frame_width=FRAME_WIDTH,
+                must_exist=False,
             )
         elif choice == 2:
             raw = input(
@@ -397,16 +400,16 @@ def run_flow(settings: Settings) -> None:
 
     apply_settings(settings)
     destination.mkdir(parents=True, exist_ok=True)
-    sm.clear_screen()
-    try:
-        nc.run(settings.src, settings.dst)
-    except KeyboardInterrupt:
-        print("\nAbgebrochen.")
-    except RuntimeError as exc:
-        print(f"{sm.RED}Fehler: {exc}{sm.RESET}")
-    except SystemExit as exc:
-        print(f"{sm.RED}Abgebrochen: {exc}{sm.RESET}")
-    sm.pause()
+    with sm.suspend_alternate_screen():
+        try:
+            nc.run(settings.src, settings.dst)
+        except KeyboardInterrupt:
+            print("\nAbgebrochen.")
+        except RuntimeError as exc:
+            print(f"{sm.RED}Fehler: {exc}{sm.RESET}")
+        except SystemExit as exc:
+            print(f"{sm.RED}Abgebrochen: {exc}{sm.RESET}")
+        sm.pause()
 
 
 def main(argv: list[str] | None = None) -> int:

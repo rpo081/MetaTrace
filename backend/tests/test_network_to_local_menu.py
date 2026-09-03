@@ -1,4 +1,5 @@
 import json
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -99,3 +100,29 @@ def test_run_flow_reports_runtime_error_and_pauses(monkeypatch, capsys, tmp_path
     out = capsys.readouterr().out
     assert "Fehler: boom" in out
     assert paused["called"] is True
+
+
+class _DummyTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_run_flow_suspends_alternate_screen_around_copy_output(monkeypatch, tmp_path):
+    output = _DummyTTY()
+    settings = menu.Settings(src=r"\\x\y", dst=str(tmp_path), extensions=[".png"])
+
+    monkeypatch.setattr(menu.sm, "is_accessible_directory", lambda path: True)
+    monkeypatch.setattr(menu, "apply_settings", lambda settings: None)
+    monkeypatch.setattr(menu.sm, "pause", lambda: print("PAUSE", file=output))
+    monkeypatch.setattr(menu.sys, "stdout", output)
+    monkeypatch.setattr(menu.sm.sys, "stdout", output)
+    monkeypatch.setattr(menu.nc, "run", lambda src, dst: print("PROMPT-REGION", file=output))
+
+    menu.run_flow(settings)
+
+    text = output.getvalue()
+    assert "\x1b[?1049l" in text
+    assert "\x1b[?1049h" in text
+    assert text.index("\x1b[?1049l") < text.index("PROMPT-REGION")
+    assert text.index("PROMPT-REGION") < text.index("PAUSE")
+    assert text.index("PAUSE") < text.index("\x1b[?1049h")

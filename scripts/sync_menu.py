@@ -21,10 +21,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
 import select
 import shutil
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
@@ -61,6 +63,7 @@ RED = "\x1b[31m"
 RESET = "\x1b[0m"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 FRAME_BLOCK = "░"
+DIRECTORY_IO_TIMEOUT_SEC = 0.35
 
 
 @dataclass
@@ -140,9 +143,54 @@ def alternate_screen():
         sys.stdout.flush()
 
 
+@contextmanager
+def suspend_alternate_screen(clear_on_resume: bool = True):
+    """Temporarily return to the primary screen for long-running console output."""
+    if not sys.stdout.isatty():
+        yield
+        return
+    sys.stdout.write("\x1b[?1049l")
+    sys.stdout.flush()
+    try:
+        yield
+    finally:
+        sys.stdout.write("\x1b[?1049h")
+        sys.stdout.flush()
+        if clear_on_resume:
+            clear_screen()
+
+
 def is_accessible_directory(path: str) -> bool:
     """Check local, drive-letter, and UNC folders with Windows long-path support."""
-    return os.path.isdir(si.longpath(path))
+    try:
+        return _run_with_timeout(
+            lambda: os.path.isdir(si.longpath(path)),
+            timeout_sec=DIRECTORY_IO_TIMEOUT_SEC,
+            fallback=False,
+        )
+    except OSError:
+        return False
+
+
+def _run_with_timeout(func, *, timeout_sec: float, fallback):
+    """Return fallback when a filesystem probe blocks longer than expected."""
+    result_queue = queue.SimpleQueue()
+
+    def worker() -> None:
+        try:
+            result_queue.put((True, func()))
+        except Exception as exc:  # pragma: no cover - exercised via caller behaviour
+            result_queue.put((False, exc))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout_sec)
+    if thread.is_alive():
+        return fallback
+    ok, payload = result_queue.get()
+    if ok:
+        return payload
+    raise payload
 
 
 def _read_key() -> str:
@@ -242,18 +290,25 @@ VIEW_SIZE = 14
 
 def list_subdirectories(path: Path) -> list[str]:
     """Return visible subdirectory names, sorted case-insensitively."""
-    try:
+    def scan() -> list[str]:
         entries = list(os.scandir(path))
+        names = [
+            entry.name
+            for entry in entries
+            if entry.is_dir()
+            and entry.name not in si.SKIP_DIRS
+            and not entry.name.startswith(".")
+        ]
+        return sorted(names, key=str.casefold)
+
+    try:
+        return _run_with_timeout(
+            scan,
+            timeout_sec=DIRECTORY_IO_TIMEOUT_SEC,
+            fallback=[],
+        )
     except OSError:
         return []
-    names = [
-        entry.name
-        for entry in entries
-        if entry.is_dir()
-        and entry.name not in si.SKIP_DIRS
-        and not entry.name.startswith(".")
-    ]
-    return sorted(names, key=str.casefold)
 
 
 def browse_folder(
@@ -265,7 +320,7 @@ def browse_folder(
 
     Returns the selected path, MANUAL_INPUT for typed entry, or None on Esc.
     """
-    current = Path(start) if start and Path(start).exists() else Path.home()
+    current = browse_folder_start(start)
     entries = list_subdirectories(current)
     sel = 0
     with raw_terminal():
@@ -338,18 +393,27 @@ def browse_folder(
             sys.stdout.flush()
 
 
-def pick_folder(title: str, current: str, frame_width: int | None = None) -> str:
+def pick_folder(
+    title: str,
+    current: str,
+    frame_width: int | None = None,
+    must_exist: bool = True,
+) -> str:
     """Browse first; fall back to typed entry via the manual option."""
     picked = browse_folder(title, current, frame_width=frame_width)
     if picked is None:
         return current
     if picked is MANUAL_INPUT:
-        return ask_path(f"{title} – Pfad", str(browse_folder_start(current)), True)
+        return ask_path(
+            f"{title} – Pfad",
+            str(browse_folder_start(current)),
+            must_exist,
+        )
     return picked
 
 
 def browse_folder_start(current: str) -> Path:
-    return Path(current) if current and Path(current).exists() else Path.home()
+    return Path(current) if current and is_accessible_directory(current) else Path.home()
 
 
 def ask_path(prompt: str, current: str, must_exist: bool) -> str:
@@ -453,7 +517,9 @@ def edit_settings(settings: Settings, config_path: Path) -> None:
         if choice == 0:
             settings.src = pick_folder("Quelle (Netzwerkshare)", settings.src)
         elif choice == 1:
-            settings.dst = pick_folder("Ziel (lokaler Ordner)", settings.dst)
+            settings.dst = pick_folder(
+                "Ziel (lokaler Ordner)", settings.dst, must_exist=False
+            )
         elif choice == 2:
             picked = choose(
                 "Modus", [f"{m} – {MODE_INFO[m]}" for m in MODES], framed=True
@@ -488,34 +554,35 @@ def run_flow(settings: Settings, dry_run: bool) -> None:
         pause()
         return
 
-    label = "TESTLAUF — es wird nichts kopiert" if dry_run else "KOPIEREN"
-    print(f"\n{BOLD}{label}{RESET}\n")
-    stats = si.Stats()
-    started = time.time()
-    try:
-        si.copy_matching_folders(
-            src,
-            dst,
-            settings.mode,
-            clamp_threads(settings.threads),
-            dry_run,
-            stats,
-            skip_dirs,
-        )
-    except KeyboardInterrupt:
-        print("\nAbgebrochen — Zwischenstand:")
-    duration = time.time() - started
+    with suspend_alternate_screen():
+        label = "TESTLAUF — es wird nichts kopiert" if dry_run else "KOPIEREN"
+        print(f"\n{BOLD}{label}{RESET}\n")
+        stats = si.Stats()
+        started = time.time()
+        try:
+            si.copy_matching_folders(
+                src,
+                dst,
+                settings.mode,
+                clamp_threads(settings.threads),
+                dry_run,
+                stats,
+                skip_dirs,
+            )
+        except KeyboardInterrupt:
+            print("\nAbgebrochen — Zwischenstand:")
+        duration = time.time() - started
 
-    print("-" * 60)
-    print(f"Modus   : {settings.mode}" + (" (dry-run)" if dry_run else ""))
-    print(f"Ordner  : {stats.folders}")
-    print(f"Fehler  : {stats.failed}")
-    for error in stats.errors[:20]:
-        print(f"  ERROR {error}")
-    if len(stats.errors) > 20:
-        print(f"  ... und {len(stats.errors) - 20} weitere")
-    print(f"Dauer   : {duration:.1f}s")
-    pause()
+        print("-" * 60)
+        print(f"Modus   : {settings.mode}" + (" (dry-run)" if dry_run else ""))
+        print(f"Ordner  : {stats.folders}")
+        print(f"Fehler  : {stats.failed}")
+        for error in stats.errors[:20]:
+            print(f"  ERROR {error}")
+        if len(stats.errors) > 20:
+            print(f"  ... und {len(stats.errors) - 20} weitere")
+        print(f"Dauer   : {duration:.1f}s")
+        pause()
 
 
 def _enable_windows_ansi() -> None:

@@ -125,8 +125,62 @@ def test_list_subdirectories_missing_dir_returns_empty(tmp_path):
     assert mod.list_subdirectories(tmp_path / "nope") == []
 
 
+def test_list_subdirectories_returns_empty_when_probe_times_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        mod,
+        "_run_with_timeout",
+        lambda func, *, timeout_sec, fallback: fallback,
+    )
+
+    assert mod.list_subdirectories(tmp_path) == []
+
+
 def test_is_accessible_directory_uses_longpath(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(mod.si, "longpath", lambda path: calls.append(path) or str(tmp_path))
     assert mod.is_accessible_directory(r"\\server\share")
     assert calls == [r"\\server\share"]
+
+
+def test_is_accessible_directory_returns_false_when_probe_times_out(monkeypatch):
+    monkeypatch.setattr(mod, "_run_with_timeout", lambda func, *, timeout_sec, fallback: fallback)
+    assert mod.is_accessible_directory(r"\\server\share") is False
+
+
+def test_browse_folder_start_falls_back_to_home_for_inaccessible_current(monkeypatch, tmp_path):
+    monkeypatch.setattr(mod, "is_accessible_directory", lambda path: False)
+    monkeypatch.setattr(mod.Path, "home", classmethod(lambda cls: tmp_path))
+
+    assert mod.browse_folder_start(r"Z:\offline") == tmp_path
+
+
+def test_pick_folder_manual_destination_accepts_missing_path(monkeypatch, tmp_path):
+    missing = tmp_path / "new-target"
+    monkeypatch.setattr(mod, "browse_folder", lambda *args, **kwargs: mod.MANUAL_INPUT)
+    monkeypatch.setattr(mod, "browse_folder_start", lambda current: tmp_path)
+    monkeypatch.setattr(
+        mod,
+        "ask_path",
+        lambda prompt, current, must_exist: (prompt, current, must_exist, str(missing)),
+    )
+
+    prompt, current, must_exist, selected = mod.pick_folder(
+        "Ziel (lokaler Ordner)", "", must_exist=False
+    )
+
+    assert prompt == "Ziel (lokaler Ordner) – Pfad"
+    assert current == str(tmp_path)
+    assert must_exist is False
+    assert selected == str(missing)
+
+
+def test_pick_folder_manual_source_requires_existing_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(mod, "browse_folder", lambda *args, **kwargs: mod.MANUAL_INPUT)
+    monkeypatch.setattr(mod, "browse_folder_start", lambda current: tmp_path)
+    monkeypatch.setattr(
+        mod,
+        "ask_path",
+        lambda prompt, current, must_exist: must_exist,
+    )
+
+    assert mod.pick_folder("Quelle", "") is True

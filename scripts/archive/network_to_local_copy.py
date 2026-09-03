@@ -302,13 +302,17 @@ def clear_status_line(previous_width, stream=None):
     out.flush()
 
 
-def draw_progress_frame(lines, stream=None):
-    """Redraw a compact full-screen progress frame for TTY terminals."""
+def draw_progress_frame(lines, previous_line_count=0, stream=None):
+    """Redraw a compact progress block in place on interactive terminals."""
     out = sys.stdout if stream is None else stream
-    out.write("\x1b[H\x1b[2J\x1b[H")
-    for line in lines:
-        out.write(line + "\n")
+    line_count = max(previous_line_count, len(lines))
+    if previous_line_count:
+        out.write(f"\x1b[{previous_line_count}F")
+    for index in range(line_count):
+        line = lines[index] if index < len(lines) else ""
+        out.write("\r\x1b[2K" + line + "\n")
     out.flush()
+    return len(lines)
 
 
 def below_excluded_dir(path, root):
@@ -414,7 +418,7 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
     file_count = sum(len(filenames) for filenames in paths_by_directory.values())
     interactive_frame = sys.stdout.isatty()
     if interactive_frame:
-        draw_progress_frame(
+        frame_lines = draw_progress_frame(
             render_copy_dashboard(
                 render_copy_progress(0, len(paths_by_directory), 0, file_count, 0.001),
                 len(paths_by_directory),
@@ -425,6 +429,7 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
         )
     else:
         print(f"Kopiere {file_count} geänderte Dateien nach {target_root} ...")
+        frame_lines = 0
     batches = list(paths_by_directory.items())
     max_processes = min(ROBOCOPY_PROCESSES, len(batches))
     active = []
@@ -466,14 +471,15 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
                 max(now - started, 0.001),
             )
             if interactive_frame:
-                draw_progress_frame(
+                frame_lines = draw_progress_frame(
                     render_copy_dashboard(
                         progress_line,
                         total_jobs - completed_jobs,
                         total_jobs,
                         now - started,
                         target_root=target_root,
-                    )
+                    ),
+                    previous_line_count=frame_lines,
                 )
             else:
                 progress_width = write_status_line(
@@ -493,7 +499,8 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
                 total_jobs,
                 max(time.perf_counter() - started, 0.001),
                 target_root=target_root,
-            )
+            ),
+            previous_line_count=frame_lines,
         )
     elif progress_width:
         clear_status_line(progress_width)
