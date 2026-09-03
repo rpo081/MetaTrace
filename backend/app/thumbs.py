@@ -33,7 +33,7 @@ def _load_thumbnail_source(source: Path):
             if "A" in image.getbands():
                 return image.convert("RGBA")
             return image.convert("RGB")
-    except UnidentifiedImageError:
+    except (UnidentifiedImageError, OSError):
         return embeddings.decode_image(source)
 
 
@@ -397,7 +397,11 @@ class IdleThumbnailWorker:
             self._reset_traversal()
 
     def _count_cached(self) -> int:
-        return sum(1 for _ in self.settings.thumbs_dir.glob("*.png"))
+        try:
+            return sum(1 for _ in self.settings.thumbs_dir.glob("*.png"))
+        except OSError as exc:
+            log.warning("could not count thumb cache: %s", exc)
+            return self._cache_count if self._cache_count is not None else 0
 
     def _at_capacity(self) -> bool:
         cap = self.settings.thumbs_max_files
@@ -438,11 +442,26 @@ class IdleThumbnailWorker:
                 self._state = "complete"
                 return False
             cache = self.settings.thumbs_dir / f"{candidate.id}_{self.settings.thumb_size}.png"
-            if cache.exists():
+            try:
+                if cache.exists():
+                    continue
+            except OSError as exc:
+                log.warning("could not stat thumb cache for image %d: %s", candidate.id, exc)
+                self._failed += 1
                 continue
-            root = Path(self.settings.store_path).resolve()
-            source = (root / candidate.rel_path).resolve()
-            if not source.is_relative_to(root) or not source.is_file():
+            try:
+                root = Path(self.settings.store_path).resolve()
+                source = (root / candidate.rel_path).resolve()
+            except OSError as exc:
+                log.warning("could not resolve source for image %d: %s", candidate.id, exc)
+                self._failed += 1
+                continue
+            try:
+                if not source.is_relative_to(root) or not source.is_file():
+                    self._failed += 1
+                    continue
+            except OSError as exc:
+                log.warning("could not stat source for image %d: %s", candidate.id, exc)
                 self._failed += 1
                 continue
             self._state = "generating"
@@ -473,7 +492,12 @@ class IdleThumbnailWorker:
                 except OSError:
                     pass
             while not self._stop.is_set():
-                generated = self.run_once()
+                try:
+                    generated = self.run_once()
+                except Exception:  # noqa: BLE001
+                    log.warning("idle thumbnail worker iteration failed", exc_info=True)
+                    self._state = "waiting"
+                    generated = False
                 delay = self.settings.idle_thumbnail_delay_ms / 1000 if generated else 1.0
                 self._stop.wait(delay)
         finally:
