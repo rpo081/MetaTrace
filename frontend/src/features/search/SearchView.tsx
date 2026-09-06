@@ -4,11 +4,12 @@
  *  search-specific sort state. The App-level transient `notice` slot is
  *  rendered here because that's where the original App put it.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SearchResult, ViewMode, Stats } from '../../types'
 import { prewarmThumbnails } from '../../api'
 import Dropzone from '../../components/Dropzone'
 import DetailPanel from '../../components/DetailPanel'
+import ImageViewerModal from '../../components/ImageViewerModal'
 import ResultGrid from '../../components/ResultGrid'
 import ResultList from '../../components/ResultList'
 import ViewToggle from '../../components/ViewToggle'
@@ -77,21 +78,49 @@ export default function SearchView({
     void prewarmThumbnails(search.loading ? [] : prewarmIds, 512).catch(() => {})
   }, [search.loading, prewarmIds])
 
-  // Close detail panel on Escape
+  // Image viewer overlay: snapshot of the current result list + index.
+  const [viewer, setViewer] = useState<{ images: SearchResult[]; index: number } | null>(null)
+  const sortedRef = useRef<SearchResult[]>([])
+  sortedRef.current = sortedResults
+
+  // Close detail panel on Escape (not while the image viewer is open —
+  // the viewer handles Escape itself).
   useEffect(() => {
-    if (!search.selected) return
+    if (!search.selected || viewer) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') search.setSelected(null)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [search.selected, search.setSelected])
+  }, [search.selected, search.setSelected, viewer])
 
   const handleSelect = useCallback(
     (r: SearchResult | { id: number }) => {
       // ResultGrid/List pass either SearchResult or BrowseImage; here we only
       // accept SearchResult. The caller is search-only.
       if ('score' in r) search.setSelected(r as SearchResult)
+    },
+    [search.setSelected],
+  )
+
+  const openViewer = useCallback((i: number) => {
+    setViewer({ images: sortedRef.current, index: i })
+  }, [])
+  const closeViewer = useCallback(() => {
+    setViewer(null)
+  }, [])
+  const openDetailViewer = useCallback(() => {
+    const sel = search.selected
+    if (sel) setViewer({ images: [sel], index: 0 })
+  }, [search.selected])
+  const handleViewerNavigate = useCallback(
+    (next: number) => {
+      setViewer((v) => {
+        if (!v || next < 0 || next >= v.images.length) return v
+        // Mirror the focused image in the background detail panel.
+        search.setSelected(v.images[next])
+        return { images: v.images, index: next }
+      })
     },
     [search.setSelected],
   )
@@ -275,18 +304,33 @@ export default function SearchView({
                       results={sortedResults}
                       selectedId={search.selected?.id ?? null}
                       onSelect={handleSelect}
+                      onOpenViewer={openViewer}
                     />
                   ) : (
                     <ResultList
                       results={sortedResults}
                       selectedId={search.selected?.id ?? null}
                       onSelect={handleSelect}
+                      onOpenViewer={openViewer}
                     />
                   )}
                   {search.selected && (
-                    <DetailPanel result={search.selected} onClose={() => search.setSelected(null)} />
+                    <DetailPanel
+                      result={search.selected}
+                      onClose={() => search.setSelected(null)}
+                      onOpenViewer={openDetailViewer}
+                    />
                   )}
                 </div>
+                {viewer && (
+                  <ImageViewerModal
+                    open
+                    images={viewer.images}
+                    index={viewer.index}
+                    onClose={closeViewer}
+                    onNavigate={handleViewerNavigate}
+                  />
+                )}
               </>
             )}
           </>

@@ -15,6 +15,7 @@ import ResultGrid from './ResultGrid'
 import ResultList from './ResultList'
 import ViewToggle from './ViewToggle'
 import DetailPanel from './DetailPanel'
+import ImageViewerModal from './ImageViewerModal'
 import { SortAscIcon, SortDescIcon } from './Icon'
 import { BROWSE_VIEW_MODE_KEY, loadViewMode, saveViewMode } from '../lib/storage'
 
@@ -128,15 +129,17 @@ export default function BrowseView() {
     [],
   )
 
-  // Close detail panel on Escape
+  // Close detail panel on Escape (not while the image viewer is open —
+  // the viewer handles Escape itself).
+  const [viewer, setViewer] = useState<{ images: BrowseImage[]; index: number } | null>(null)
   useEffect(() => {
-    if (!selectedId) return
+    if (!selectedId || viewer) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setSelectedId(null)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectedId])
+  }, [selectedId, viewer])
 
   const onFiltersChange = useCallback(
     (next: BrowseFilters) => {
@@ -169,6 +172,30 @@ export default function BrowseView() {
 
   // Build results array compatible with ResultGrid/ResultList
   const results: BrowseImage[] = data?.items ?? []
+  const resultsRef = useRef<BrowseImage[]>([])
+  resultsRef.current = results
+  const selectedIdRef = useRef<number | null>(null)
+  selectedIdRef.current = selectedId
+
+  const openViewer = useCallback((i: number) => {
+    setViewer({ images: resultsRef.current, index: i })
+  }, [])
+  const closeViewer = useCallback(() => {
+    setViewer(null)
+  }, [])
+  const openDetailViewer = useCallback(() => {
+    const item = resultsRef.current.find((r) => r.id === selectedIdRef.current)
+    if (item) setViewer({ images: [item], index: 0 })
+  }, [])
+  const handleViewerNavigate = useCallback((next: number) => {
+    setViewer((v) => {
+      if (!v || next < 0 || next >= v.images.length) return v
+      // Mirror the focused image in the background detail panel.
+      const item = v.images[next]
+      if (item) setSelectedId(item.id)
+      return { images: v.images, index: next }
+    })
+  }, [])
 
   useEffect(() => {
     void prewarmThumbnails(loading ? [] : results.map((result) => result.id), 512).catch(() => {})
@@ -241,16 +268,25 @@ export default function BrowseView() {
             {selectedId && selectedImage ? (
               <div className="split split-browse">
                 {viewMode === 'grid' ? (
-                  <ResultGrid results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} />
+                  <ResultGrid results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} onOpenViewer={openViewer} />
                 ) : (
-                  <ResultList results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} />
+                  <ResultList results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} onOpenViewer={openViewer} />
                 )}
-                <DetailPanel result={selectedImage} onClose={() => setSelectedId(null)} />
+                <DetailPanel result={selectedImage} onClose={() => setSelectedId(null)} onOpenViewer={openDetailViewer} />
               </div>
             ) : viewMode === 'grid' ? (
-              <ResultGrid results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} />
+              <ResultGrid results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} onOpenViewer={openViewer} />
             ) : (
-              <ResultList results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} />
+              <ResultList results={results} selectedId={selectedId} onSelect={(r) => setSelectedId(r.id)} onOpenViewer={openViewer} />
+            )}
+            {viewer && (
+              <ImageViewerModal
+                open
+                images={viewer.images}
+                index={viewer.index}
+                onClose={closeViewer}
+                onNavigate={handleViewerNavigate}
+              />
             )}
           </>
         )}

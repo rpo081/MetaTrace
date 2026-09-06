@@ -1791,3 +1791,190 @@ input[type='checkbox'] {
   grid-template-columns: 1fr 1fr;
   gap: var(--space-2);
 }
+
+/* ---------- image viewer modal ---------- */
+.modal-card-viewer {
+  width: min(100%, 960px);
+  max-height: calc(100vh - 48px);
+}
+.viewer-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.viewer-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.viewer-meta {
+  font-weight: 400;
+  font-size: var(--text-sm);
+}
+.viewer-counter {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.viewer-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: min(62vh, 560px);
+  min-height: 320px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background:
+    repeating-conic-gradient(var(--checker-a) 0% 25%, var(--checker-b) 0% 50%) 0 / 16px 16px;
+  cursor: grab;
+  touch-action: none;
+}
+.viewer-stage.viewer-panning {
+  cursor: grabbing;
+}
+.viewer-img {
+  max-width: none;
+  max-height: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  will-change: transform;
+}
+.viewer-thumb {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  opacity: 0.6;
+}
+.viewer-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  background: var(--overlay-scrim);
+  font-size: var(--text-sm);
+}
+.viewer-error {
+  position: absolute;
+  left: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.viewer-toolbar-sep {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+.viewer-btn {
+  width: var(--control-height);
+  min-width: var(--control-height);
+  min-height: var(--control-height);
+  padding: 0;
+}
+.viewer-btn-text {
+  min-width: var(--control-height);
+  min-height: var(--control-height);
+  font-variant-numeric: tabular-nums;
+}
+.viewer-zoom-label {
+  min-width: 72px;
+  text-align: center;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.viewer-hint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+.viewer-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.6;
+}
+
+/* ---------- card expand (grid) ---------- */
+.card-wrap {
+  position: relative;
+  min-width: 0;
+}
+.card-expand {
+  position: absolute;
+  left: 50%;
+  top: 38%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--badge-scrim);
+  color: var(--text);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.card-expand:hover {
+  border-color: var(--accent);
+  background: rgba(16, 20, 24, 0.92);
+}
+.card-expand:focus-visible {
+  opacity: 1;
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.card-wrap:hover .card-expand,
+.card-wrap:focus-within .card-expand {
+  opacity: 1;
+}
+.list-enlarge-btn {
+  margin-top: var(--space-1);
+}
+@media (hover: none) {
+  .card-expand {
+    opacity: 1;
+  }
+}
+@media (max-width: 768px) {
+  .modal-card-viewer {
+    width: 100%;
+    max-height: calc(100vh - 24px);
+  }
+  .viewer-stage {
+    height: 52vh;
+    min-height: 240px;
+  }
+}

@@ -35,4 +35,17 @@ describe('ResultList', () => {
     fireEvent.click(btn)
     expect(onSelect).toHaveBeenCalled()
   })
+
+  it('opens viewer via Vergrößern button and row double-click', () => {
+    const onSelect = vi.fn()
+    const onOpenViewer = vi.fn()
+    render(<ResultList results={mockResults as any} selectedId={null} onSelect={onSelect} onOpenViewer={onOpenViewer} />)
+    const enlargeButtons = screen.getAllByText('Vergrößern')
+    expect(enlargeButtons.length).toBe(2)
+    fireEvent.click(enlargeButtons[1])
+    expect(onOpenViewer).toHaveBeenCalledWith(1)
+    const row = screen.getByRole('button', { name: /^a\.png/ })
+    fireEvent.doubleClick(row)
+    expect(onOpenViewer).toHaveBeenCalledWith(0)
+  })
 })

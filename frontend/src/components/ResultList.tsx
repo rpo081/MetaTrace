@@ -6,16 +6,17 @@ interface Props {
   results: (SearchResult | BrowseImage)[]
   selectedId: number | null
   onSelect: (r: SearchResult | BrowseImage) => void
+  onOpenViewer?: (index: number) => void
 }
 
 function formatDims(r: SearchResult | BrowseImage): string | null {
   return r.width != null && r.height != null ? `${r.width}×${r.height}` : null
 }
 
-export default function ResultList({ results, selectedId, onSelect }: Props) {
+export default function ResultList({ results, selectedId, onSelect, onOpenViewer }: Props) {
   return (
     <div className="result-list" role="list">
-      {results.map((r) => {
+      {results.map((r, i) => {
         const isSelected = selectedId === r.id
         const dims = formatDims(r)
         const ext = formatExt(r.rel_path)
@@ -64,6 +65,12 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
                 if ((e.target as HTMLElement).closest('button')) return
                 onSelect(r)
               }}
+              onDoubleClick={(e) => {
+                const sel = typeof window !== 'undefined' ? window.getSelection()?.toString() : ''
+                if (sel) return
+                if ((e.target as HTMLElement).closest('button')) return
+                onOpenViewer?.(i)
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
@@ -74,8 +81,12 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
               <button
                 type="button"
                 className="list-thumb-btn"
-                aria-label={`Open ${basename(r.rel_path)}`}
+                aria-label={`Select ${basename(r.rel_path)}, double-click to view original`}
                 onClick={() => onSelect(r)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation()
+                  onOpenViewer?.(i)
+                }}
               >
                 <AuthenticatedImage
                   className="list-thumb"
@@ -114,6 +125,18 @@ export default function ResultList({ results, selectedId, onSelect }: Props) {
                 {'score' in r && r.score != null && (
                   <div className="list-score muted">
                     {Math.round(r.score * 100)}% match
+                  </div>
+                )}
+                {onOpenViewer && (
+                  <div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm list-enlarge-btn"
+                      onClick={() => onOpenViewer(i)}
+                      aria-label={`Original von ${basename(r.rel_path)} ansehen`}
+                    >
+                      Vergrößern
+                    </button>
                   </div>
                 )}
               </div>

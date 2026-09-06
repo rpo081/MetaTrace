@@ -37,4 +37,24 @@ describe('ResultGrid', () => {
     render(<ResultGrid results={mockResults as any} selectedId={null} onSelect={onSelect} />)
     expect(screen.getByText('EXACT')).toBeInTheDocument()
   })
+
+  it('opens viewer via expand button without selecting', () => {
+    const onSelect = vi.fn()
+    const onOpenViewer = vi.fn()
+    render(<ResultGrid results={mockResults as any} selectedId={null} onSelect={onSelect} onOpenViewer={onOpenViewer} />)
+    const expands = screen.getAllByRole('button', { name: /Original von/ })
+    expect(expands.length).toBe(2)
+    fireEvent.click(expands[0])
+    expect(onOpenViewer).toHaveBeenCalledWith(0)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('opens viewer on card double-click', () => {
+    const onSelect = vi.fn()
+    const onOpenViewer = vi.fn()
+    render(<ResultGrid results={mockResults as any} selectedId={null} onSelect={onSelect} onOpenViewer={onOpenViewer} />)
+    const card = screen.getByRole('button', { name: /^a\.png/ })
+    fireEvent.doubleClick(card)
+    expect(onOpenViewer).toHaveBeenCalledWith(0)
+  })
 })

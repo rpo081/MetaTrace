@@ -8,6 +8,7 @@ import { getSignedFileUrl } from '../features/auth/api'
 interface Props {
   result: SearchResult | BrowseImage
   onClose: () => void
+  onOpenViewer?: () => void
 }
 
 function detailThumbnailUrl(thumbUrl: string): string {
@@ -63,7 +64,7 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export default function DetailPanel({ result, onClose }: Props) {
+export default function DetailPanel({ result, onClose, onOpenViewer }: Props) {
   const xmpEntries = sortedXmpEntries(result.xmp ?? {})
   const [copiedPath, setCopiedPath] = useState(false)
   const [copiedFolder, setCopiedFolder] = useState(false)
@@ -135,6 +136,16 @@ export default function DetailPanel({ result, onClose }: Props) {
             >
               Open folder
             </button>
+            {onOpenViewer && (
+              <button
+                type="button"
+                className="btn btn-ghost detail-open-folder"
+                onClick={onOpenViewer}
+                title="Original in der Bildansicht vergrößern"
+              >
+                Vergrößern
+              </button>
+            )}
             {copiedFolder && (
               <span className="info-box detail-inline-notice" role="status">
                 Path copied to clipboard
