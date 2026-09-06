@@ -49,6 +49,7 @@ export interface MfaStatus {
   enrolled_at: string | null
   backup_remaining: number
   has_pending: boolean
+  pending_expired?: boolean
 }
 
 export interface UserCreateRequest {
@@ -119,11 +120,12 @@ export async function mfaStatus(): Promise<MfaStatus> {
   return res.json()
 }
 
-export async function mfaEnroll(): Promise<{ otpauth_url: string; secret: string }> {
+export async function mfaEnroll(password: string): Promise<{ otpauth_url: string; secret: string }> {
   const res = await fetch('/api/auth/mfa/enroll', {
     method: 'POST',
-    headers: buildAuthHeaders(),
+    headers: { ...buildAuthHeaders(), 'Content-Type': 'application/json' },
     credentials: 'include',
+    body: JSON.stringify({ password }),
   })
   if (!res.ok) await throwApiError(res)
   return res.json()
@@ -138,12 +140,12 @@ export async function mfaQrBlob(): Promise<Blob> {
   return res.blob()
 }
 
-export async function mfaConfirm(code: string): Promise<{ ok: boolean; backup_codes: string[] }> {
+export async function mfaConfirm(code: string, password: string): Promise<{ ok: boolean; backup_codes: string[] }> {
   const res = await fetch('/api/auth/mfa/confirm', {
     method: 'POST',
     headers: { ...buildAuthHeaders(), 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, password }),
   })
   if (!res.ok) await throwApiError(res)
   return res.json()
@@ -159,12 +161,12 @@ export async function mfaDisable(password: string, code?: string): Promise<void>
   if (!res.ok) await throwApiError(res)
 }
 
-export async function mfaRegenerateCodes(code: string): Promise<{ ok: boolean; backup_codes: string[] }> {
+export async function mfaRegenerateCodes(code: string, password: string): Promise<{ ok: boolean; backup_codes: string[] }> {
   const res = await fetch('/api/auth/mfa/regenerate-codes', {
     method: 'POST',
     headers: { ...buildAuthHeaders(), 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, password }),
   })
   if (!res.ok) await throwApiError(res)
   return res.json()

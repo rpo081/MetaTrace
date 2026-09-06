@@ -16,6 +16,30 @@ from .auth import _JWT_AUDIENCE, _JWT_ISSUER
 MFA_PRE_AUTH_TTL_MINUTES = 5
 MFA_TOTP_WINDOW = 1
 MFA_BACKUP_CODE_COUNT = 10
+MFA_PENDING_TTL_MINUTES = 15
+
+
+def is_pending_expired(pending_at: str | None, now=None) -> bool:
+    """Return True when a pending MFA enrollment has expired.
+
+    ``None`` (no timestamp, e.g. rows written before the column existed)
+    returns False for backwards compatibility so old rows are not bricked.
+    Accepts ISO strings with a ``Z`` suffix; naive datetimes are assumed UTC.
+    """
+    if pending_at is None:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(pending_at).replace("Z", "+00:00"))
+    except Exception:
+        # Fail closed: a corrupt timestamp must not yield an indefinite
+        # pending enrollment — treat as expired so QR/confirm 410 + clear.
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    ref = now if now is not None else datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return (ref - parsed) > timedelta(minutes=MFA_PENDING_TTL_MINUTES)
 
 _BACKUP_NORMALIZE_RE = re.compile(r"[^A-Z0-9]")
 

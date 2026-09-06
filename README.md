@@ -249,14 +249,27 @@ Admin UI: from the browser console run `localStorage.setItem('metatrace_admin_to
   (`5 min`, single-use, never accepted as an access token) → code or backup
   code. Secrets are Fernet-encrypted at rest (`METATRACE_MFA_ENCRYPTION_KEY`),
   codes are rate-limited (`5/min`) and feed the account lockout, and an
-  atomic per-30 s replay guard rejects code reuse (each code works once —
-  right after enrollment, wait for the next code before the first 2FA login).
-  Admins can reset a user's 2FA via
-  `POST /api/users/{id}/mfa/reset` (user management shows the 2FA status).
-  Users without 2FA see no behaviour change. Set
-  `METATRACE_MFA_REQUIRED_ROLES="admin"` (or `"admin,editor"`) to force
-  enrollment for those roles (403 `mfa_required` until enabled). Keep the
-  server clock NTP-synced — drifted clocks reject valid codes.
+   atomic per-30 s replay guard rejects code reuse (each code works once —
+   right after enrollment, wait for the next code before the first 2FA login).
+   Pending enrollments expire after 15 minutes (QR/confirm then return 410
+   `enrollment expired` and the pending secret is cleared — start over with a
+   fresh enrollment). Starting enrollment, confirming it, and regenerating
+   backup codes all require password re-authentication; QR views are audit-logged
+   (`mfa_qr_viewed`).
+   Admins can reset a user's 2FA via
+   `POST /api/users/{id}/mfa/reset` (user management shows the 2FA status).
+   Users without 2FA see no behaviour change. Set
+   `METATRACE_MFA_REQUIRED_ROLES="admin"` (or `"admin,editor"`) to force
+   enrollment for those roles (403 `mfa_required` until enabled). Keep the
+   server clock NTP-synced — drifted clocks reject valid codes.
+- **MFA encryption-key backup & rotation:** generate the Fernet key with
+  `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+  and store it in an offline backup (password manager / sealed secret). If the
+  key is lost, every enrolled second factor is unrecoverable — the only fix is
+  an admin 2FA reset per user (`POST /api/users/{id}/mfa/reset`, then each
+  user re-enrolls). To rotate the key, migrate each stored secret
+  decrypt-with-old / re-encrypt-with-new; deploying a new key without
+  migrating bricks all existing factors the same way a lost key does.
 - The container runs the server as the unprivileged `appuser`; the entrypoint
   fixes `/data` volume ownership on first start, then drops privileges. To run
   fully rootless instead, pre-create the data volume owned by your UID and set
@@ -310,7 +323,7 @@ Environment variables (or `.env`, see `.env.example`):
 | `METATRACE_LOCKOUT_THRESHOLD` | `5` | failed logins before account lock |
 | `METATRACE_LOCKOUT_MINUTES` | `15` | lockout duration in minutes |
 | `METATRACE_ALLOW_UNAUTH` | `false` | trusted-LAN escape hatch: when `true` and no JWT secret is set, mutating endpoints accept no auth. **Must be `false` for internet-facing deployments** |
-| `METATRACE_MFA_ENCRYPTION_KEY` | — | Fernet key for encrypting TOTP secrets at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. **Required for any 2FA operation** — when unset, MFA endpoints return 500 while all non-MFA behaviour stays identical |
+| `METATRACE_MFA_ENCRYPTION_KEY` | — | Fernet key for encrypting TOTP secrets at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. **Required for any 2FA operation** — when unset, MFA endpoints return 500 while all non-MFA behaviour stays identical. **Back this key up offline** — loss bricks all enrolled factors (admin reset + re-enroll is the only recovery) |
 | `METATRACE_MFA_REQUIRED_ROLES` | — (empty) | comma-separated roles forced to enroll in 2FA (e.g. `admin` or `admin,editor`). Empty = opt-in only, no enforcement |
 
 ## Performance notes

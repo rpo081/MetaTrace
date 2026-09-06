@@ -19,6 +19,7 @@ from ..dependencies import get_current_user, require_role
 from ..models.auth import (
     MfaConfirmRequest,
     MfaDisableRequest,
+    MfaEnrollRequest,
     MfaRegenerateRequest,
     MfaVerifyRequest,
 )
@@ -29,6 +30,7 @@ from ..mfa import (
     generate_backup_codes,
     get_fernet,
     hash_backup_code,
+    is_pending_expired,
     new_totp_secret,
     provisioning_url,
     verify_backup_code_hash,
@@ -66,6 +68,25 @@ def _client(request: Request) -> tuple[str | None, str | None]:
     )
 
 
+def _pending_at(row) -> str | None:
+    try:
+        return row["mfa_pending_at"]
+    except (KeyError, IndexError):
+        return None
+
+
+def _pending_expired(row) -> bool:
+    """True when a pending (unenrolled) secret exists but its TTL lapsed."""
+    try:
+        secret = row["mfa_secret"]
+        enabled = row["mfa_enabled"]
+    except (KeyError, IndexError):
+        return False
+    if not secret or enabled:
+        return False
+    return is_pending_expired(_pending_at(row))
+
+
 def _lockout_active(row) -> bool:
     if row["locked_until"] is None:
         return False
@@ -89,11 +110,15 @@ async def mfa_status(request: Request, response: Response, user=Depends(_mfa_rol
     if row is None:
         raise HTTPException(401, "user not found")
     response.headers["Cache-Control"] = "no-store, max-age=0"
+    expired = _pending_expired(row)
     return {
         "enabled": bool(row["mfa_enabled"]),
         "enrolled_at": row["mfa_enrolled_at"],
         "backup_remaining": db.count_unused_mfa_backup_codes(settings.db_path, row["id"]),
-        "has_pending": bool(row["mfa_secret"] and not row["mfa_enabled"]),
+        # No side effects here: an expired pending stays until QR/confirm
+        # clears it (or a fresh enroll rotates it).
+        "has_pending": bool(row["mfa_secret"] and not row["mfa_enabled"] and not expired),
+        "pending_expired": expired,
     }
 
 
@@ -102,7 +127,9 @@ async def mfa_status(request: Request, response: Response, user=Depends(_mfa_rol
 # ---------------------------------------------------------------------------
 
 @router.post("/enroll")
-async def mfa_enroll(request: Request, response: Response, user=Depends(_mfa_roles)):
+async def mfa_enroll(
+    request: Request, response: Response, body: MfaEnrollRequest, user=Depends(_mfa_roles)
+):
     _check_rate_limit(request, "5/hour", per_endpoint=True)
     settings = _settings(request)
     fernet = _fernet_or_500(settings)
@@ -111,6 +138,14 @@ async def mfa_enroll(request: Request, response: Response, user=Depends(_mfa_rol
     row = db.get_user_by_id(db_path, user["id"])
     if row is None:
         raise HTTPException(401, "user not found")
+    if not verify_password(body.password, row["password_hash"]):
+        # Rotating the pending secret is privileged: re-auth like disable.
+        db.record_login_failure(
+            db_path, row["id"], settings.max_failed_attempts, settings.lockout_duration_minutes
+        )
+        ip, ua = _client(request)
+        audit(db_path, user_id=row["id"], action="mfa_verify_failed", ip_address=ip, user_agent=ua)
+        raise HTTPException(400, "current password is incorrect")
     if row["mfa_enabled"]:
         raise HTTPException(400, "MFA already enabled")
 
@@ -145,10 +180,19 @@ async def mfa_qr(request: Request, user=Depends(_mfa_roles)):
         raise HTTPException(404, "no pending MFA enrollment")
     if row["mfa_enabled"]:
         raise HTTPException(400, "MFA already enabled")
+    if _pending_expired(row):
+        db.set_mfa_secret(db_path, row["id"], None)
+        ip, ua = _client(request)
+        audit(db_path, user_id=row["id"], action="mfa_pending_expired",
+              ip_address=ip, user_agent=ua)
+        raise HTTPException(410, "enrollment expired")
     try:
         secret = decrypt_secret(fernet, row["mfa_secret"])  # type: ignore[arg-type]
     except ValueError:
         raise HTTPException(500, "MFA not configured") from None
+
+    ip, ua = _client(request)
+    audit(db_path, user_id=row["id"], action="mfa_qr_viewed", ip_address=ip, user_agent=ua)
 
     img = qrcode.make(provisioning_url(secret, row["username"]))
     buf = io.BytesIO()
@@ -176,10 +220,25 @@ async def mfa_confirm(
     row = db.get_user_by_id(db_path, user["id"])
     if row is None:
         raise HTTPException(401, "user not found")
+    if not verify_password(body.password, row["password_hash"]):
+        # Confirming binds the factor persistently: re-auth like enroll.
+        # Verified first so a wrong password reveals nothing about pending state.
+        db.record_login_failure(
+            db_path, row["id"], settings.max_failed_attempts, settings.lockout_duration_minutes
+        )
+        ip, ua = _client(request)
+        audit(db_path, user_id=row["id"], action="mfa_verify_failed", ip_address=ip, user_agent=ua)
+        raise HTTPException(400, "current password is incorrect")
     if row["mfa_enabled"]:
         raise HTTPException(400, "MFA already enabled")
     if not row["mfa_secret"]:
         raise HTTPException(400, "no pending MFA enrollment")
+    if _pending_expired(row):
+        db.set_mfa_secret(db_path, row["id"], None)
+        ip, ua = _client(request)
+        audit(db_path, user_id=row["id"], action="mfa_pending_expired",
+              ip_address=ip, user_agent=ua)
+        raise HTTPException(410, "enrollment expired")
     try:
         secret = decrypt_secret(fernet, row["mfa_secret"])  # type: ignore[arg-type]
     except ValueError:
@@ -448,6 +507,14 @@ async def mfa_regenerate_codes(
     row = db.get_user_by_id(db_path, user["id"])
     if row is None:
         raise HTTPException(401, "user not found")
+    if not verify_password(body.password, row["password_hash"]):
+        # Regenerating backup codes invalidates the old set: re-auth first.
+        db.record_login_failure(
+            db_path, row["id"], settings.max_failed_attempts, settings.lockout_duration_minutes
+        )
+        ip, ua = _client(request)
+        audit(db_path, user_id=row["id"], action="mfa_verify_failed", ip_address=ip, user_agent=ua)
+        raise HTTPException(400, "current password is incorrect")
     if not row["mfa_enabled"] or not row["mfa_secret"]:
         raise HTTPException(400, "MFA not enabled")
     try:

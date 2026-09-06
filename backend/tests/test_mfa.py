@@ -104,13 +104,13 @@ def _auth(username="mfauser", password="Good-Password-123", client=None):
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
-def _enroll_and_confirm(client, headers, clock=None):
-    e = client.post("/api/auth/mfa/enroll", headers=headers)
+def _enroll_and_confirm(client, headers, clock=None, password="Good-Password-123"):
+    e = client.post("/api/auth/mfa/enroll", headers=headers, json={"password": password})
     assert e.status_code == 200, e.text
     assert e.headers.get("cache-control") == "no-store, max-age=0"
     secret = e.json()["secret"]
     code = code_at(secret, clock["step"]) if clock else pyotp.TOTP(secret).now()
-    c = client.post("/api/auth/mfa/confirm", headers=headers, json={"code": code})
+    c = client.post("/api/auth/mfa/confirm", headers=headers, json={"code": code, "password": password})
     assert c.status_code == 200, c.text
     assert c.headers.get("cache-control") == "no-store, max-age=0"
     return secret, c.json()["backup_codes"]
@@ -180,7 +180,8 @@ class TestNoMfaRegression:
         s = client.get("/api/auth/mfa/status", headers=h)
         assert s.status_code == 200
         assert s.json() == {"enabled": False, "enrolled_at": None,
-                            "backup_remaining": 0, "has_pending": False}
+                            "backup_remaining": 0, "has_pending": False,
+                            "pending_expired": False}
 
 
 class TestEnrollConfirm:
@@ -199,18 +200,20 @@ class TestEnrollConfirm:
         """A second enroll replaces the pending secret; the old QR/code dies."""
         _register(client)
         h = _auth(client=client)
-        old_secret = client.post("/api/auth/mfa/enroll", headers=h).json()["secret"]
-        new_secret = client.post("/api/auth/mfa/enroll", headers=h).json()["secret"]
+        old_secret = client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"}).json()["secret"]
+        new_secret = client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"}).json()["secret"]
         assert new_secret != old_secret
         assert client.post("/api/auth/mfa/confirm", headers=h,
-                           json={"code": pyotp.TOTP(old_secret).now()}).status_code == 401
+                           json={"code": pyotp.TOTP(old_secret).now(),
+                                 "password": "Good-Password-123"}).status_code == 401
         assert client.post("/api/auth/mfa/confirm", headers=h,
-                           json={"code": pyotp.TOTP(new_secret).now()}).status_code == 200
+                           json={"code": pyotp.TOTP(new_secret).now(),
+                                 "password": "Good-Password-123"}).status_code == 200
 
     def test_qr_is_png_no_store(self, client):
         _register(client)
         h = _auth(client=client)
-        client.post("/api/auth/mfa/enroll", headers=h)
+        client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"})
         q = client.get("/api/auth/mfa/qr", headers=h)
         assert q.status_code == 200
         assert q.headers["content-type"] == "image/png"
@@ -232,23 +235,23 @@ class TestEnrollConfirm:
     def test_confirm_wrong_code(self, client):
         _register(client)
         h = _auth(client=client)
-        client.post("/api/auth/mfa/enroll", headers=h)
-        r = client.post("/api/auth/mfa/confirm", headers=h, json={"code": "wrongcode"})
+        client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"})
+        r = client.post("/api/auth/mfa/confirm", headers=h, json={"code": "wrongcode", "password": "Good-Password-123"})
         assert r.status_code == 401
 
     def test_confirm_no_pending_400(self, client):
         _register(client)
         h = _auth(client=client)
-        r = client.post("/api/auth/mfa/confirm", headers=h, json={"code": "123456"})
+        r = client.post("/api/auth/mfa/confirm", headers=h, json={"code": "123456", "password": "Good-Password-123"})
         assert r.status_code == 400
 
     def test_confirm_failures_feed_lockout(self, client):
         _register(client, username="clockc")
         h = _auth(username="clockc", client=client)
-        client.post("/api/auth/mfa/enroll", headers=h)
+        client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"})
         for _ in range(5):
             assert client.post("/api/auth/mfa/confirm", headers=h,
-                               json={"code": "wrongcode"}).status_code == 401
+                               json={"code": "wrongcode", "password": "Good-Password-123"}).status_code == 401
         locked = _login(client, username="clockc")
         assert locked.status_code == 423
 
@@ -256,7 +259,7 @@ class TestEnrollConfirm:
         _register(client)
         h = _auth(client=client)
         _enroll_and_confirm(client, h, totp_clock)
-        r = client.post("/api/auth/mfa/enroll", headers=h)
+        r = client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"})
         assert r.status_code == 400
 
     def test_mfa_unconfigured_500(self, tmp_path, monkeypatch):
@@ -275,7 +278,8 @@ class TestEnrollConfirm:
             at = c.post("/api/auth/login",
                         json={"username": "user2", "password": "Good-Password-123"}).json()["access_token"]
             r = c.post("/api/auth/mfa/enroll",
-                       headers={"Authorization": f"Bearer {at}"})
+                       headers={"Authorization": f"Bearer {at}"},
+                       json={"password": "Good-Password-123"})
             assert r.status_code == 500
             assert r.json()["detail"] == "MFA not configured"
 
@@ -384,10 +388,11 @@ class TestLoginVerify:
         monkeypatch.setattr(mfa_api, "verify_totp", lambda secret, code: True)
         _register(client)
         h = _auth(client=client)
-        e = client.post("/api/auth/mfa/enroll", headers=h)
+        e = client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"})
         assert e.status_code == 200
         assert client.post("/api/auth/mfa/confirm", headers=h,
-                           json={"code": "111111"}).status_code == 200
+                           json={"code": "111111",
+                                 "password": "Good-Password-123"}).status_code == 200
         # Seeded step: any code (even the confirm one) is a replay.
         mt0 = _login(client).json()["mfa_token"]
         assert client.post("/api/auth/mfa/verify",
@@ -407,11 +412,12 @@ class TestLoginVerify:
         """The enrollment proof must not buy a session in the same window."""
         _register(client)
         h = _auth(client=client)
-        e = client.post("/api/auth/mfa/enroll", headers=h)
+        e = client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"})
         secret = e.json()["secret"]
         confirm_code = code_at(secret, totp_clock["step"])
         assert client.post("/api/auth/mfa/confirm", headers=h,
-                           json={"code": confirm_code}).status_code == 200
+                           json={"code": confirm_code,
+                                 "password": "Good-Password-123"}).status_code == 200
         mt = _login(client).json()["mfa_token"]
         assert client.post("/api/auth/mfa/verify",
                            json={"mfa_token": mt, "code": confirm_code}).status_code == 401
@@ -506,7 +512,7 @@ class TestDisableRegenerate:
     def test_disable_never_enabled_password_only(self, client, settings):
         _register(client)
         h = _auth(client=client)
-        client.post("/api/auth/mfa/enroll", headers=h)  # pending only
+        client.post("/api/auth/mfa/enroll", headers=h, json={"password": "Good-Password-123"})  # pending only
         r = client.post("/api/auth/mfa/disable", headers=h,
                         json={"password": "Good-Password-123"})
         assert r.status_code == 200, r.text
@@ -535,7 +541,8 @@ class TestDisableRegenerate:
         secret, old_codes = _enroll_and_confirm(client, h, totp_clock)
         totp_clock["step"] += 1
         r = client.post("/api/auth/mfa/regenerate-codes", headers=h,
-                        json={"code": code_at(secret, totp_clock["step"])})
+                        json={"code": code_at(secret, totp_clock["step"]),
+                              "password": "Good-Password-123"})
         assert r.status_code == 200, r.text
         assert r.headers.get("cache-control") == "no-store, max-age=0"
         new_codes = r.json()["backup_codes"]
@@ -549,8 +556,158 @@ class TestDisableRegenerate:
         h = _auth(client=client)
         _enroll_and_confirm(client, h, totp_clock)
         r = client.post("/api/auth/mfa/regenerate-codes", headers=h,
-                        json={"code": "wrongcode"})
+                        json={"code": "wrongcode", "password": "Good-Password-123"})
         assert r.status_code == 401
+
+
+class TestPendingExpiryAndReauth:
+    @staticmethod
+    def _expire_pending(settings, username="mfauser"):
+        with db.connect(settings.db_path) as conn:
+            conn.execute(
+                "UPDATE users SET mfa_pending_at = '2000-01-01T00:00:00Z' "
+                "WHERE username = ?",
+                (username,),
+            )
+
+    @staticmethod
+    def _audit_actions(settings, action):
+        with db.connect(settings.db_path) as conn:
+            return conn.execute(
+                "SELECT * FROM audit_log WHERE action = ? ORDER BY id DESC", (action,)
+            ).fetchall()
+
+    def test_enroll_requires_password_422(self, client):
+        _register(client)
+        h = _auth(client=client)
+        assert client.post("/api/auth/mfa/enroll", headers=h).status_code == 422
+        assert client.post("/api/auth/mfa/enroll", headers=h, json={}).status_code == 422
+
+    def test_enroll_wrong_password_400(self, client):
+        _register(client)
+        h = _auth(client=client)
+        r = client.post("/api/auth/mfa/enroll", headers=h,
+                        json={"password": "Wrong-Pass-123"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == "current password is incorrect"
+
+    def test_status_reports_pending_then_expired(self, client, settings):
+        _register(client)
+        h = _auth(client=client)
+        client.post("/api/auth/mfa/enroll", headers=h,
+                    json={"password": "Good-Password-123"})
+        fresh = client.get("/api/auth/mfa/status", headers=h).json()
+        assert fresh["has_pending"] is True
+        assert fresh["pending_expired"] is False
+        self._expire_pending(settings)
+        stale = client.get("/api/auth/mfa/status", headers=h).json()
+        assert stale["has_pending"] is False
+        assert stale["pending_expired"] is True
+
+    def test_qr_expired_410_and_clears(self, client, settings):
+        _register(client)
+        h = _auth(client=client)
+        client.post("/api/auth/mfa/enroll", headers=h,
+                    json={"password": "Good-Password-123"})
+        self._expire_pending(settings)
+        r = client.get("/api/auth/mfa/qr", headers=h)
+        assert r.status_code == 410
+        assert r.json()["detail"] == "enrollment expired"
+        # Expired pending is cleared: status flips back, QR is now 404.
+        s = client.get("/api/auth/mfa/status", headers=h).json()
+        assert s["has_pending"] is False
+        assert s["pending_expired"] is False
+        assert client.get("/api/auth/mfa/qr", headers=h).status_code == 404
+        assert len(self._audit_actions(settings, "mfa_pending_expired")) == 1
+
+    def test_confirm_expired_410(self, client, settings):
+        _register(client)
+        h = _auth(client=client)
+        client.post("/api/auth/mfa/enroll", headers=h,
+                    json={"password": "Good-Password-123"})
+        self._expire_pending(settings)
+        r = client.post("/api/auth/mfa/confirm", headers=h, json={"code": "123456", "password": "Good-Password-123"})
+        assert r.status_code == 410
+        assert r.json()["detail"] == "enrollment expired"
+        # Expired pending is cleared + audited, mirroring the QR path.
+        s = client.get("/api/auth/mfa/status", headers=h).json()
+        assert s["has_pending"] is False
+        assert s["pending_expired"] is False
+        assert len(self._audit_actions(settings, "mfa_pending_expired")) == 1
+
+    def test_confirm_requires_password_422(self, client, totp_clock):
+        _register(client)
+        h = _auth(client=client)
+        e = client.post("/api/auth/mfa/enroll", headers=h,
+                        json={"password": "Good-Password-123"})
+        secret = e.json()["secret"]
+        code = code_at(secret, totp_clock["step"])
+        assert client.post("/api/auth/mfa/confirm", headers=h,
+                           json={"code": code}).status_code == 422
+        assert client.post("/api/auth/mfa/confirm", headers=h,
+                           json={}).status_code == 422
+
+    def test_confirm_wrong_password_400(self, client, totp_clock):
+        _register(client)
+        h = _auth(client=client)
+        e = client.post("/api/auth/mfa/enroll", headers=h,
+                        json={"password": "Good-Password-123"})
+        secret = e.json()["secret"]
+        code = code_at(secret, totp_clock["step"])
+        r = client.post("/api/auth/mfa/confirm", headers=h,
+                        json={"code": code, "password": "Wrong-Pass-123"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == "current password is incorrect"
+        # Pending survives a wrong password: the correct pair still confirms.
+        r2 = client.post("/api/auth/mfa/confirm", headers=h,
+                         json={"code": code, "password": "Good-Password-123"})
+        assert r2.status_code == 200
+
+    def test_regenerate_requires_code_422(self, client, totp_clock):
+        _register(client)
+        h = _auth(client=client)
+        _enroll_and_confirm(client, h, totp_clock)
+        r = client.post("/api/auth/mfa/regenerate-codes", headers=h,
+                        json={"password": "Good-Password-123"})
+        assert r.status_code == 422
+
+    def test_regenerate_when_not_enabled_400(self, client):
+        _register(client)
+        h = _auth(client=client)
+        client.post("/api/auth/mfa/enroll", headers=h,
+                    json={"password": "Good-Password-123"})
+        r = client.post("/api/auth/mfa/regenerate-codes", headers=h,
+                        json={"code": "123456", "password": "Good-Password-123"})
+        assert r.status_code == 400
+
+    def test_regenerate_requires_password_422(self, client, totp_clock):
+        _register(client)
+        h = _auth(client=client)
+        secret, _ = _enroll_and_confirm(client, h, totp_clock)
+        totp_clock["step"] += 1
+        r = client.post("/api/auth/mfa/regenerate-codes", headers=h,
+                        json={"code": code_at(secret, totp_clock["step"])})
+        assert r.status_code == 422
+
+    def test_regenerate_wrong_password_400(self, client, totp_clock):
+        _register(client)
+        h = _auth(client=client)
+        secret, _ = _enroll_and_confirm(client, h, totp_clock)
+        totp_clock["step"] += 1
+        r = client.post("/api/auth/mfa/regenerate-codes", headers=h,
+                        json={"code": code_at(secret, totp_clock["step"]),
+                              "password": "Wrong-Pass-123"})
+        assert r.status_code == 400
+        assert r.json()["detail"] == "current password is incorrect"
+
+    def test_qr_success_audited(self, client, settings):
+        _register(client)
+        h = _auth(client=client)
+        client.post("/api/auth/mfa/enroll", headers=h,
+                    json={"password": "Good-Password-123"})
+        assert client.get("/api/auth/mfa/qr", headers=h).status_code == 200
+        rows = self._audit_actions(settings, "mfa_qr_viewed")
+        assert len(rows) == 1
 
 
 class TestAdminResetAndGate:
@@ -623,7 +780,8 @@ class TestAdminResetAndGate:
                     json={"username": "pending",
                           "password": "Good-Password-123"}).json()["access_token"]
         hv = {"Authorization": f"Bearer {at}"}
-        pending_secret = c.post("/api/auth/mfa/enroll", headers=hv).json()["secret"]
+        pending_secret = c.post("/api/auth/mfa/enroll", headers=hv,
+                                      json={"password": "Good-Password-123"}).json()["secret"]
         vid = next(u["id"] for u in c.get("/api/users", headers=ha).json()["users"]
                    if u["username"] == "pending")
         assert c.post(f"/api/users/{vid}/reset-password", headers=ha,
@@ -634,7 +792,8 @@ class TestAdminResetAndGate:
                            "password": "New-Password-12345"}).json()["access_token"]
         hv2 = {"Authorization": f"Bearer {at2}"}
         assert c.post("/api/auth/mfa/confirm", headers=hv2,
-                      json={"code": pyotp.TOTP(pending_secret).now()}).status_code == 400
+                      json={"code": pyotp.TOTP(pending_secret).now(),
+                            "password": "New-Password-12345"}).status_code == 400
 
     def test_reset_password_keeps_enabled_mfa(self, admin_app, totp_clock):
         """An active second factor survives a password reset (mfa/reset wipes)."""
@@ -687,5 +846,6 @@ class TestAdminResetAndGate:
             # Whitelisted paths stay reachable while gated.
             assert c.get("/api/auth/me", headers=ha).status_code == 200
             assert c.get("/api/auth/mfa/status", headers=ha).status_code == 200
-            assert c.post("/api/auth/mfa/enroll", headers=ha).status_code == 200
+            assert c.post("/api/auth/mfa/enroll", headers=ha,
+                          json={"password": "Good-Password-123"}).status_code == 200
             assert c.post("/api/auth/logout", headers=ha).status_code == 200

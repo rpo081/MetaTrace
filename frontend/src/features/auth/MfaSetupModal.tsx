@@ -118,11 +118,13 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
   }, [])
 
   async function startEnroll() {
-    if (submitting) return
+    // Rotating the pending secret is privileged: the server re-authenticates
+    // the password (POST /enroll {password}).
+    if (submitting || !password) return
     setError(null)
     setSubmitting(true)
     try {
-      const res = await mfaEnroll()
+      const res = await mfaEnroll(password)
       setSecret(res.secret)
       setCode('')
       try {
@@ -136,29 +138,93 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
       }
       setStep('enrolling')
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (err instanceof ApiError && err.status === 410) {
+        // Refresh first (it clears errors), then set the expiry message so
+        // it survives the status reload and shows on the overview step.
+        await refresh()
+        setError('Enrollment expired — start over with a fresh code.')
+      } else {
+        setError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
       setSubmitting(false)
     }
   }
 
-  async function confirmEnroll(e: React.FormEvent) {
-    e.preventDefault()
-    if (submitting || !code) return
+  async function resumeEnroll() {
+    // Continue an unfinished enrollment: re-fetch the QR for the existing
+    // pending secret instead of rotating it. The manual-entry key is unknown
+    // here (only POST /enroll returns it), so just the QR is shown — the
+    // pending secret never changes.
+    //
+    // Viewing the existing QR needs no password, but binding it via confirm
+    // does (POST /confirm {code, password}), so a hijacked session can view
+    // but cannot persist an attacker factor without the password. Rotating
+    // via POST /enroll always re-authenticates the password. Only a 404
+    // (pending state gone server-side) falls back to a fresh enroll; any
+    // other QR failure is surfaced so a transient error never silently rotates.
+    if (submitting) return
     setError(null)
     setSubmitting(true)
     try {
-      const res = await mfaConfirm(code)
+      const blob = await mfaQrBlob()
+      // Revoke outside the state updater (updaters must be pure —
+      // StrictMode double-invokes them, which would leak an object URL).
+      if (qrUrl) URL.revokeObjectURL(qrUrl)
+      setQrUrl(URL.createObjectURL(blob))
+      setSecret(null)
+      setCode('')
+      setStep('enrolling')
+      setSubmitting(false)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 410) {
+        setSubmitting(false)
+        await refresh()
+        setError('Enrollment expired — enter your password and start over.')
+        return
+      }
+      if (err instanceof ApiError && err.status === 404) {
+        setSubmitting(false)
+        if (!password) {
+          setError('Pending enrollment is gone — enter your password and start over.')
+          return
+        }
+        await startEnroll()
+        return
+      }
+      setSubmitting(false)
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function confirmEnroll(e: React.FormEvent) {
+    e.preventDefault()
+    if (submitting || !code || !password) return
+    setError(null)
+    setSubmitting(true)
+    try {
+      const res = await mfaConfirm(code, password)
       setBackupCodes(res.backup_codes)
       // Stay on the backup step until the user clicks Done — do NOT refresh
       // here (refresh flips back to 'overview' and the once-displayed codes
       // would never be shown).
+      // The password served its re-auth purpose — drop it now so it does not
+      // linger in memory (leaveBackupStep clears it again on Done).
+      setPassword('')
       setMfaEnabled(true)
       setStep('backup')
       onChanged?.()
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setError('Invalid code. Try again.')
+      } else if (err instanceof ApiError && err.status === 400) {
+        // 400 is the wrong-password re-auth failure in the normal flow, but
+        // the backend also uses it for raced states (already enabled /
+        // pending gone) — surface those verbatim instead of mislabeling.
+        setError(/password/i.test(err.message) ? 'Current password is incorrect.' : err.message)
+      } else if (err instanceof ApiError && err.status === 410) {
+        await refresh()
+        setError('Enrollment expired — start over with a fresh code.')
       } else {
         setError(err instanceof Error ? err.message : String(err))
       }
@@ -187,13 +253,16 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
 
   async function confirmRegenerate(e: React.FormEvent) {
     e.preventDefault()
-    if (submitting || !code) return
+    if (submitting || !code || !password) return
     setError(null)
     setSubmitting(true)
     try {
-      const res = await mfaRegenerateCodes(code)
+      const res = await mfaRegenerateCodes(code, password)
       setBackupCodes(res.backup_codes)
       // Same as confirm: stay on backup until Done (see confirmEnroll).
+      // Password served its re-auth purpose — drop it (leaveBackupStep
+      // clears it again on Done).
+      setPassword('')
       setStep('backup')
       onChanged?.()
     } catch (err) {
@@ -270,20 +339,75 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
             <div className="info-box">
               {status?.enabled
                 ? `Two-factor authentication is enabled. ${status.backup_remaining} unused backup codes remain.`
-                : 'Two-factor authentication is disabled. Enable it with an authenticator app (TOTP).'}
+                : status?.has_pending
+                  ? 'Two-factor authentication is disabled. You have an unfinished enrollment — continue where you left off or start over.'
+                  : 'Two-factor authentication is disabled. Enable it with an authenticator app (TOTP).'}
             </div>
+            {status?.enabled && status.backup_remaining <= 2 && (
+              <div className="warning-box" role="status">
+                Only {status.backup_remaining} unused backup {status.backup_remaining === 1 ? 'code remains' : 'codes remain'}.
+                Generate a new set soon so you are not locked out if you lose your authenticator.
+              </div>
+            )}
+            {status?.pending_expired && !status.enabled && (
+              <div className="warning-box" role="status">
+                Enrollment expired — enter your password and start over with a fresh code.
+              </div>
+            )}
+            {!status?.enabled && (
+              <label className="field" htmlFor="mfa-overview-password">
+                <span className="field-label">Current password (required to start over or enable)</span>
+                <input
+                  id="mfa-overview-password"
+                  type="password"
+                  autoComplete="current-password"
+                  className="text-input"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={submitting}
+                  placeholder="Your password"
+                />
+              </label>
+            )}
             {error && (
               <div className="error-box" role="alert" aria-live="polite">{error}</div>
             )}
             <div className="modal-actions">
-              {!status?.enabled && (
-                <button type="button" className="btn btn-primary" onClick={() => void startEnroll()} disabled={submitting}>
+              {!status?.enabled && !status?.has_pending && !status?.pending_expired && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void startEnroll()}
+                  disabled={submitting || !password}
+                >
                   {submitting ? 'Starting…' : 'Enable 2FA'}
                 </button>
               )}
+              {!status?.enabled && (status?.has_pending || status?.pending_expired) && (
+                <>
+                  {status?.has_pending && (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => void resumeEnroll()}
+                      disabled={submitting}
+                    >
+                      {submitting ? 'Loading…' : 'Continue enrollment'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void startEnroll()}
+                    disabled={submitting || !password}
+                  >
+                    {submitting ? 'Starting…' : 'Start over'}
+                  </button>
+                </>
+              )}
               {status?.enabled && (
                 <>
-                  <button type="button" className="btn" onClick={() => { setCode(''); setError(null); setStep('regenerate') }}>
+                  <button type="button" className="btn" onClick={() => { setCode(''); setPassword(''); setError(null); setStep('regenerate') }}>
                     New backup codes
                   </button>
                   <button type="button" className="btn btn-danger-soft" onClick={() => { setCode(''); setPassword(''); setError(null); setStep('disable') }}>
@@ -298,7 +422,8 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
         {step === 'enrolling' && (
           <form className="login-form" onSubmit={confirmEnroll}>
             <div className="info-box">
-              Scan the QR code with your authenticator app, then enter the 6-digit code to confirm.
+              Scan the QR code with your authenticator app, then confirm with
+              your password and the 6-digit code.
             </div>
             {qrUrl && (
               <img src={qrUrl} alt="QR code for authenticator enrollment" className="mfa-qr" />
@@ -306,6 +431,20 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
             {secret && (
               <div className="muted">Manual entry key: <span className="mono">{secret}</span></div>
             )}
+            <label className="field" htmlFor="mfa-confirm-password">
+              <span className="field-label">Current password</span>
+              <input
+                id="mfa-confirm-password"
+                type="password"
+                autoComplete="current-password"
+                className="text-input"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={submitting}
+                required
+                placeholder="Your password"
+              />
+            </label>
             <label className="field" htmlFor="mfa-confirm-code">
               <span className="field-label">Authenticator code</span>
               <input
@@ -327,9 +466,14 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
               <div className="error-box" role="alert" aria-live="polite">{error}</div>
             )}
             <div className="modal-actions">
-              <button type="submit" className="btn btn-primary" disabled={submitting || !code}>
+              <button type="submit" className="btn btn-primary" disabled={submitting || !code || !password}>
                 {submitting ? 'Confirming…' : 'Confirm'}
               </button>
+              {error?.toLowerCase().includes('expired') && (
+                <button type="button" className="btn" onClick={backToOverview} disabled={submitting}>
+                  Start over
+                </button>
+              )}
             </div>
           </form>
         )}
@@ -411,7 +555,21 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
           <form className="login-form" onSubmit={confirmRegenerate}>
             <div className="info-box">
               Generate a new set of backup codes. The old set stops working immediately.
+              Your password and an authenticator code are both required.
             </div>
+            <label className="field" htmlFor="mfa-regen-password">
+              <span className="field-label">Current password</span>
+              <input
+                id="mfa-regen-password"
+                type="password"
+                autoComplete="current-password"
+                className="text-input"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={submitting}
+                required
+              />
+            </label>
             <label className="field" htmlFor="mfa-regen-code">
               <span className="field-label">Authenticator code</span>
               <input
@@ -432,7 +590,7 @@ export function MfaSetupModal({ onCancel, onChanged }: Props) {
               <div className="error-box" role="alert" aria-live="polite">{error}</div>
             )}
             <div className="modal-actions">
-              <button type="submit" className="btn btn-primary" disabled={submitting || !code}>
+              <button type="submit" className="btn btn-primary" disabled={submitting || !code || !password}>
                 {submitting ? 'Generating…' : 'Generate new codes'}
               </button>
               <button type="button" className="btn" onClick={backToOverview} disabled={submitting}>

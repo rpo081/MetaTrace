@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
     mfa_secret           TEXT,
     mfa_enabled          INTEGER NOT NULL DEFAULT 0,
     mfa_enrolled_at      TEXT,
+    mfa_pending_at       TEXT,
     mfa_last_counter     INTEGER,
     is_active            INTEGER NOT NULL DEFAULT 1,
     must_change_password INTEGER NOT NULL DEFAULT 0,
@@ -411,6 +412,17 @@ def init_db(db_path: Path, *, configure_journal: bool = True) -> None:
             )
         if "mfa_enrolled_at" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN mfa_enrolled_at TEXT")
+        if "mfa_pending_at" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN mfa_pending_at TEXT")
+            # Backfill: rows enrolled before the column existed carry a pending
+            # secret without timestamp — stamp them now so the 15-min TTL
+            # covers them instead of leaving them indefinite.
+            conn.execute(
+                "UPDATE users SET mfa_pending_at = "
+                "strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE mfa_secret IS NOT NULL AND mfa_enabled = 0 "
+                "AND mfa_pending_at IS NULL"
+            )
         if "mfa_last_counter" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN mfa_last_counter INTEGER")
         derived_added = _ensure_images_schema(conn)
@@ -1241,13 +1253,25 @@ def audit_log_insert(
 # ── MFA (TOTP) ──────────────────────────────────────────────────────────
 
 def set_mfa_secret(db_path: Path, user_id: int, encrypted_secret: str | None) -> None:
-    """Store the (Fernet-encrypted) pending TOTP secret. ``None`` clears it."""
+    """Store the (Fernet-encrypted) pending TOTP secret. ``None`` clears it.
+
+    Setting a secret stamps ``mfa_pending_at`` (15 min TTL enforced by the
+    API); clearing (``None`` — expiry, disable, admin reset) NULLs it.
+    """
     with closing(connect(db_path)) as conn, conn:
-        conn.execute(
-            "UPDATE users SET mfa_secret = ?, "
-            "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
-            (encrypted_secret, user_id),
-        )
+        if encrypted_secret is None:
+            conn.execute(
+                "UPDATE users SET mfa_secret = NULL, mfa_pending_at = NULL, "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+                (user_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET mfa_secret = ?, "
+                "mfa_pending_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+                "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+                (encrypted_secret, user_id),
+            )
 
 
 def enable_mfa(db_path: Path, user_id: int) -> None:
@@ -1256,6 +1280,7 @@ def enable_mfa(db_path: Path, user_id: int) -> None:
         conn.execute(
             "UPDATE users SET mfa_enabled = 1, "
             "mfa_enrolled_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), "
+            "mfa_pending_at = NULL, "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
             (user_id,),
         )
@@ -1266,7 +1291,7 @@ def disable_mfa(db_path: Path, user_id: int) -> None:
     with closing(connect(db_path)) as conn, conn:
         conn.execute(
             "UPDATE users SET mfa_secret = NULL, mfa_enabled = 0, "
-            "mfa_enrolled_at = NULL, mfa_last_counter = NULL, "
+            "mfa_enrolled_at = NULL, mfa_pending_at = NULL, mfa_last_counter = NULL, "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
             (user_id,),
         )
