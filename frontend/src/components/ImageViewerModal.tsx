@@ -39,6 +39,14 @@ function clampScale(s: number): number {
   return Math.min(MAX_SCALE, Math.max(MIN_SCALE, s))
 }
 
+function viewerFetchUrl(signedUrl: string, relPath: string): string {
+  const ext = relPath.split('.').pop()?.toLowerCase() ?? ''
+  if (ext !== 'tif' && ext !== 'tiff') return signedUrl
+  const url = new URL(signedUrl, window.location.origin)
+  url.searchParams.set('preview', 'browser')
+  return `${url.pathname}${url.search}`
+}
+
 export default function ImageViewerModal({ open, images, index, onClose, onNavigate }: Props) {
   const [status, setStatus] = useState<LoadStatus>('loading')
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
@@ -344,7 +352,7 @@ export default function ImageViewerModal({ open, images, index, onClose, onNavig
       try {
         const signed = await getSignedFileUrl(item.id)
         if (cancelled) return
-        const res = await fetch(signed, { headers: authHeaders(), credentials: 'include' })
+        const res = await fetch(viewerFetchUrl(signed, item.rel_path), { headers: authHeaders(), credentials: 'include' })
         if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
         const blob = await res.blob()
         if (cancelled) return

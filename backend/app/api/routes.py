@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
-from PIL import UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from .. import db, embeddings, metadata, store_snapshot
 from ..config import Settings
@@ -576,6 +577,7 @@ def thumb(
 def original_file(
     request: Request,
     image_id: int,
+    preview: str | None = Query(default=None),
     s: Settings = Depends(get_settings),
     user=Depends(require_role_with_query("admin", "editor", "viewer")),
 ):
@@ -621,6 +623,28 @@ def original_file(
         "Content-Disposition": f'inline; filename="{safe_name}"; filename*=UTF-8\'\'{quoted}',
         "Cache-Control": "private, max-age=86400",
     }
+    preview_requested = (preview or "").strip().lower() == "browser"
+    if preview_requested and src.suffix.lower() in {".tif", ".tiff"}:
+        preview_name = f"{Path(safe_name).stem}.png"
+        preview_quoted = _quote(preview_name, safe="")
+        preview_headers = {
+            **headers,
+            "Content-Disposition": f'inline; filename="{preview_name}"; filename*=UTF-8\'\'{preview_quoted}',
+        }
+        if etag:
+            preview_headers["ETag"] = f'{etag[:-1]}-preview-png"' if etag.endswith('"') else f"{etag}-preview-png"
+        if last_mod:
+            preview_headers["Last-Modified"] = last_mod
+        try:
+            with Image.open(src) as original:
+                image = ImageOps.exif_transpose(original)
+                rendered = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
+                buf = io.BytesIO()
+                rendered.save(buf, "PNG")
+        except (UnidentifiedImageError, OSError):
+            log.exception("browser preview generation failed for image %s", image_id)
+            raise HTTPException(500, "preview generation failed") from None
+        return Response(content=buf.getvalue(), media_type="image/png", headers=preview_headers)
     if etag:
         headers["ETag"] = etag
     if last_mod:

@@ -14,6 +14,10 @@ const mockImages = [
   { id: 2, score: 0.8, exact: false, rel_path: 'b.jpg', original_path: '\\\\nas\\b.jpg', width: 200, height: 100, xmp: {}, thumb_url: '/api/thumb/2', file_url: '/api/file/2' },
 ] as unknown as SearchResult[]
 
+const mockTiffImages = [
+  { id: 3, score: 0.7, exact: false, rel_path: 'folder/c.tif', original_path: '\\\\nas\\folder\\c.tif', width: 1200, height: 900, xmp: {}, thumb_url: '/api/thumb/3', file_url: '/api/file/3' },
+] as unknown as SearchResult[]
+
 function mockBlobFetch() {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
@@ -128,6 +132,17 @@ describe('ImageViewerModal', () => {
     await waitFor(() =>
       expect((getSignedFileUrl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBefore),
     )
+  })
+
+  it('requests browser preview for TIFF originals', async () => {
+    const onClose = vi.fn()
+    const onNavigate = vi.fn()
+    render(<ImageViewerModal open images={mockTiffImages} index={0} onClose={onClose} onNavigate={onNavigate} />)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/api/file/3?token=signed&preview=browser',
+      expect.anything(),
+    ))
   })
 
   it('returns null when closed', () => {

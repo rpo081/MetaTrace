@@ -315,6 +315,24 @@ def test_thumb_preserves_png_alpha(client):
         assert thumbnail.getpixel((0, 0))[3] == 0
 
 
+def test_file_browser_preview_converts_tiff_to_png(client):
+    settings = client.app.state.settings
+    source = settings.store_path / "preview.tif"
+    Image.new("RGB", (12, 10), (10, 20, 30)).save(source)
+    Indexer(settings).incremental(trigger="test-preview-tiff")
+
+    listing = client.get("/api/images", params={"ext": ".tif"})
+    assert listing.status_code == 200
+    items = listing.json()["items"]
+    assert len(items) == 1
+
+    response = client.get(f"/api/file/{items[0]['id']}?preview=browser")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/png")
+    with Image.open(io.BytesIO(response.content)) as preview:
+        assert preview.size == (12, 10)
+
+
 def test_file_and_thumb_containment_against_symlink_escape(client, tmp_path):
     """A symlink planted in the store must not serve files outside it."""
     s = client.app.state.settings
