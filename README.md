@@ -108,9 +108,8 @@ For direct CLI usage, the underlying copy script is:
 python scripts\network_to_local_copy.py "D:\imagestore" --source "\\nas\share\renderings"
 ```
 
-It keeps a per-share snapshot under `scripts/snapshots/`, detects
-new/changed/deleted files, applies the configured filters, and copies only the
-remaining image files.
+Each run scans source and target live, applies the configured filters, and
+copies source images that are missing at the target or differ in size.
 
 ## Legacy sync workflow
 

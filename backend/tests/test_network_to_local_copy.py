@@ -130,8 +130,6 @@ def test_build_copy_preview_rows_matches_cleanup_report_style():
         r"D:\mirror",
         12.4,
         1200,
-        80,
-        5,
         60,
         10,
         7,
@@ -142,7 +140,7 @@ def test_build_copy_preview_rows_matches_cleanup_report_style():
 
     assert rows[1] == "MetaTrace Network Copy Preview"
     assert rows[2] == "=" * 60
-    assert "CHANGE SUMMARY" in rows
+    assert "SOURCE SUMMARY" in rows
     assert "COPY FILTERS" in rows
     assert "COPY PLAN" in rows
     assert "Scanned:     1,200 files in 12.4s" in rows
@@ -158,5 +156,45 @@ def test_build_robocopy_command_omits_console_and_log_output_flags():
 
     assert "/TEE" not in command
     assert not any(part.startswith("/LOG:") for part in command)
+    assert "/NFL" not in command
+    assert "/COPY:DT" in command
+    assert "/DCOPY:T" in command
+    assert "/COPY:DAT" not in command
+    assert "/DCOPY:DA" not in command
+    assert "/J" not in command
+    assert f"/R:{mod.ROBOCOPY_RETRIES}" in command
+    assert f"/W:{mod.ROBOCOPY_RETRY_WAIT_SEC}" in command
     assert command[:3] == ["robocopy", _p("src", "proj"), _p("dst", "proj")]
     assert command[3:5] == ["a.png", "b.png"]
+
+
+def test_run_copies_all_current_source_images_without_snapshot_state(monkeypatch, tmp_path):
+    source_root = _p("src", "share")
+    target_root = str(tmp_path / "missing-target")
+    source_files = {
+        _p(source_root, "a.png"): [1, 100],
+        _p(source_root, "b.jpg"): [2, 200],
+        _p(source_root, "notes.txt"): [3, 50],
+    }
+    copied = {}
+
+    monkeypatch.setattr(
+        mod,
+        "scan_files",
+        lambda roots, workers=mod.WORKERS_SCAN, excluded_scan_paths=None: source_files,
+    )
+    monkeypatch.setattr(
+        mod,
+        "copy_files_robocopy",
+        lambda source, target, paths: copied.setdefault("paths", list(paths)),
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "j")
+
+    mod.run(source_root, target_root)
+
+    assert copied["paths"] == [
+        _p(source_root, "a.png"),
+        _p(source_root, "b.jpg"),
+    ]
+
+

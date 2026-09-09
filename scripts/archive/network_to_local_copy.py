@@ -1,8 +1,5 @@
 import argparse
-import hashlib
-import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -12,9 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
 SHARE_ROOT = r"\\erlr165a\visu$\vis_old\vis\_CT_Manual"
 WORKERS_SCAN = 16
 IS_WINDOWS = os.name == "nt"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SNAPSHOT_DIR = os.path.join(BASE_DIR, "snapshots")
-DIFF_DIR = os.path.join(SNAPSHOT_DIR, "diffs")
 # Centralised rules — single source: backend/app/file_rules.py
 try:
     from backend.app.file_rules import (
@@ -44,6 +38,8 @@ except ImportError:
     EXCLUDED_DIR_LEVELS = 2
 ROBOCOPY_THREADS = 32
 ROBOCOPY_PROCESSES = 8
+ROBOCOPY_RETRIES = 5
+ROBOCOPY_RETRY_WAIT_SEC = 2
 PROGRESS_UPDATE_SEC = 1.0
 PROCESS_POLL_SEC = 0.2
 
@@ -78,8 +74,8 @@ def scan_dir(path):
     return path, out
 
 
-def build_snapshot(roots, workers=WORKERS_SCAN, excluded_scan_paths=None):
-    snap = {}
+def scan_files(roots, workers=WORKERS_SCAN, excluded_scan_paths=None):
+    files = {}
     root = next(iter(roots))
     pending = set(roots)
     running = {}
@@ -99,14 +95,8 @@ def build_snapshot(roots, workers=WORKERS_SCAN, excluded_scan_paths=None):
                         if not is_excluded_scan_path(full, root, excluded_scan_paths):
                             pending.add(full)
                     else:
-                        snap[full] = meta
-    return snap
-
-
-def diff_snapshots(base, new):
-    changed = {p: m for p, m in new.items() if base.get(p) != m}
-    deleted = sorted(set(base) - set(new))
-    return changed, deleted
+                        files[full] = meta
+    return files
 
 
 def normalize_excluded_scan_paths(paths):
@@ -131,43 +121,6 @@ def is_excluded_scan_path(path, root, excluded_scan_paths):
         relative == excluded or relative.startswith(excluded + "/")
         for excluded in normalized
     )
-
-
-def snapshot_file_for(root):
-    """Return a per-share snapshot path so switching sources keeps separate history."""
-    slug = re.sub(r"[^A-Za-z0-9]+", "_", root).strip("_").lower()[:60] or "share"
-    digest = hashlib.blake2s(root.casefold().encode("utf-8"), digest_size=4).hexdigest()
-    return os.path.join(SNAPSHOT_DIR, f"{slug}_{digest}.json")
-
-
-def load_snapshot(path, root, excluded_scan_paths):
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    if data.get("root") != root:
-        return None
-    if normalize_excluded_scan_paths(data.get("excluded_scan_paths", ())) != normalize_excluded_scan_paths(excluded_scan_paths):
-        return None
-    return data["files"]
-
-
-def _write_json(data, path):
-    tmp = path + ".tmp"
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-    os.replace(tmp, path)
-
-
-def save_snapshot(snap, path, root, excluded_scan_paths):
-    data = {
-        "version": 1,
-        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "root": root,
-        "excluded_scan_paths": sorted(normalize_excluded_scan_paths(excluded_scan_paths)),
-        "file_count": len(snap),
-        "files": snap,
-    }
-    _write_json(data, path)
 
 
 def format_size(num_bytes):
@@ -224,8 +177,6 @@ def build_copy_preview_rows(
     target_root,
     scan_duration,
     scanned_files,
-    changed_files,
-    deleted_files,
     image_files,
     filtered_count,
     oversized_count,
@@ -242,10 +193,8 @@ def build_copy_preview_rows(
         f"Target:      {target_root}",
         f"Scanned:     {scanned_files:,} files in {scan_duration:.1f}s",
         "",
-        "CHANGE SUMMARY",
+        "SOURCE SUMMARY",
         "-" * 60,
-        f"New/changed: {changed_files:,}",
-        f"Deleted:     {deleted_files:,}",
         f"Image files: {image_files:,}",
         "",
         "COPY FILTERS",
@@ -269,15 +218,13 @@ def build_robocopy_command(source_directory, target_directory, filenames):
         robocopy_path(target_directory),
         *sorted(filenames),
         f"/MT:{ROBOCOPY_THREADS}",
-        "/COPY:DAT",
-        "/DCOPY:DA",
+        "/COPY:DT",
+        "/DCOPY:T",
         "/FFT",
-        "/J",
         "/XJ",
-        "/R:1",
-        "/W:1",
+        f"/R:{ROBOCOPY_RETRIES}",
+        f"/W:{ROBOCOPY_RETRY_WAIT_SEC}",
         "/NP",
-        "/NFL",
         "/NDL",
         "/NJH",
         "/NJS",
@@ -350,7 +297,7 @@ def filter_images(paths, all_paths, root):
 def filter_oversized(paths, sizes, limit_mb):
     """Split paths into kept files and files above the size limit.
 
-    ``sizes`` maps full path -> byte size (from a snapshot). Files without a
+    ``sizes`` maps full path -> byte size (from the current scan). Files without a
     known size are kept. ``limit_mb <= 0`` disables the filter.
     """
     if not limit_mb or limit_mb <= 0:
@@ -366,19 +313,19 @@ def filter_oversized(paths, sizes, limit_mb):
     return kept, too_large
 
 
-def filter_existing_target_files(paths, source_root, target_root, source_snapshot):
+def filter_existing_target_files(paths, source_root, target_root, source_files):
     """Drop files that already exist in the target with the same size."""
     if not os.path.isdir(longpath(target_root)):
         return list(paths), 0
-    target_snapshot = build_snapshot([target_root])
+    target_files = scan_files([target_root])
     target_sizes = {
         os.path.relpath(path, target_root).casefold(): metadata[1]
-        for path, metadata in target_snapshot.items()
+        for path, metadata in target_files.items()
     }
     filtered = [
         path for path in paths
         if target_sizes.get(os.path.relpath(path, source_root).casefold())
-        != source_snapshot[path][1]
+        != source_files[path][1]
     ]
     return filtered, len(paths) - len(filtered)
 
@@ -508,82 +455,23 @@ def copy_files_robocopy(source_root, target_root, changed_paths):
     return file_count
 
 
-def save_diff(changed, deleted, root, snapshot_file):
-    def matches(path):
-        if not EXTENSIONS:
-            return True
-        return os.path.splitext(os.path.basename(path))[1].lower() in EXTENSIONS
-
-    matched = sorted(p for p in changed if matches(p))
-    data = {
-        "version": 1,
-        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "root": root,
-        "base_snapshot": os.path.abspath(snapshot_file),
-        "counts": {
-            "new_or_changed": len(changed),
-            "deleted": len(deleted),
-            "matches": len(matched),
-        },
-        "new_or_changed": dict(sorted(changed.items())),
-        "deleted": sorted(deleted),
-        "matches": matched,
-    }
-    latest = os.path.join(DIFF_DIR, "latest.json")
-    _write_json(data, latest)
-    return latest
-
-
 def run(source_root, target_root):
-    """Scan the share, report the filtered copy set, and copy after confirmation."""
-    snapshot_file = snapshot_file_for(source_root)
+    """Scan source and target, report the filtered copy set, and copy after confirmation."""
     excluded_scan_paths = sorted(normalize_excluded_scan_paths(EXCLUDED_SCAN_PATHS))
 
     print(f"Scanne {source_root} ...")
     t0 = time.perf_counter()
-    new = build_snapshot([source_root], excluded_scan_paths=excluded_scan_paths)
+    source_files = scan_files([source_root], excluded_scan_paths=excluded_scan_paths)
     dt = time.perf_counter() - t0
-    print(f"{len(new)} Dateien in {dt:.1f}s gefunden")
-
-    if os.path.exists(snapshot_file):
-        base = load_snapshot(snapshot_file, source_root, excluded_scan_paths)
-        if base is None:
-            print("Snapshot-Konfiguration geändert: Basis-Snapshot wird neu aufgebaut")
-            changed = new
-            deleted = []
-        else:
-            changed, deleted = diff_snapshots(base, new)
-            print(f"{len(changed)} neu/geaendert, {len(deleted)} geloescht")
-            for p in deleted:
-                print(f"  GELÖSCHT: {p}")
-            t1 = time.perf_counter()
-            matched = {
-                path for path in changed
-                if not EXTENSIONS
-                or os.path.splitext(os.path.basename(path))[1].lower() in EXTENSIONS
-            }
-            print(f"{len(matched)} von {len(changed)} geaenderten Dateien entsprechen "
-                  f"den konfigurierten Endungen in {time.perf_counter() - t1:.1f}s")
-            print(f"Diff gespeichert: {save_diff(changed, deleted, source_root, snapshot_file)}")
-    else:
-        print("Erster Lauf: Basis-Snapshot wird erstellt")
-        changed = new
-        deleted = []
-
-    save_snapshot(new, snapshot_file, source_root, excluded_scan_paths)
-    print(f"Snapshot gespeichert: {snapshot_file}")
+    print(f"{len(source_files)} Dateien in {dt:.1f}s gefunden")
 
     image_paths = sorted(
-        path for path in changed
+        path for path in source_files
         if os.path.splitext(os.path.basename(path))[1].lower() in EXTENSIONS
     )
-    all_image_paths = [
-        path for path in new
-        if os.path.splitext(os.path.basename(path))[1].lower() in EXTENSIONS
-    ]
-    copy_paths = filter_images(image_paths, all_image_paths, source_root)
+    copy_paths = filter_images(image_paths, image_paths, source_root)
     filtered_count = len(image_paths) - len(copy_paths)
-    file_sizes = {path: meta[1] for path, meta in new.items()}
+    file_sizes = {path: meta[1] for path, meta in source_files.items()}
     copy_paths, oversized = filter_oversized(copy_paths, file_sizes, MAX_FILE_SIZE_MB)
     if oversized:
         print(f"{len(oversized)} Dateien ueber {MAX_FILE_SIZE_MB} MB ausgeschlossen:")
@@ -592,16 +480,14 @@ def run(source_root, target_root):
         if len(oversized) > 10:
             print(f"  ... und {len(oversized) - 10} weitere")
     copy_paths, existing_count = filter_existing_target_files(
-        copy_paths, source_root, target_root, new
+        copy_paths, source_root, target_root, source_files
     )
-    copy_bytes = sum(changed[path][1] for path in copy_paths)
+    copy_bytes = sum(source_files[path][1] for path in copy_paths)
     for row in build_copy_preview_rows(
         source_root,
         target_root,
         dt,
-        len(new),
-        len(changed),
-        len(deleted),
+        len(source_files),
         len(image_paths),
         filtered_count,
         len(oversized),
