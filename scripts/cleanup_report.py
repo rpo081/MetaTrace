@@ -33,6 +33,7 @@ try:
         EXCLUDED_DIR_NAMES as _CENTRAL_EXCLUDED,
         MAX_FILE_SIZE_MB as _CENTRAL_MAX_MB,
         MAX_SEQUENCE_IMAGES as _CENTRAL_MAX_SEQ,
+        sequence_key as _CENTRAL_SEQUENCE_KEY,
     )
 
     ALLOWED_EXTENSIONS = _CENTRAL_ALLOWED
@@ -40,7 +41,10 @@ try:
     MAX_SEQUENCE_IMAGES = _CENTRAL_MAX_SEQ
     EXCLUDED_DIR_NAMES = _CENTRAL_EXCLUDED
     EXCLUDED_DIR_LEVELS = _CENTRAL_EXCLUDED_LEVELS
+    sequence_key = _CENTRAL_SEQUENCE_KEY
 except ImportError:
+    import re
+
     ALLOWED_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff"})
     DEFAULT_MAX_SIZE_MB = 20
     MAX_SEQUENCE_IMAGES = 100
@@ -49,6 +53,18 @@ except ImportError:
         "references", "referenzen",
     })
     EXCLUDED_DIR_LEVELS = 3
+
+    _SEQUENCE_NUMBER_RE = re.compile(r"\d+")
+
+    def sequence_key(path: str) -> tuple[str, str, str] | None:
+        """Mirror of backend/app/file_rules.sequence_key (standalone fallback)."""
+        stem = Path(path).stem
+        if not _SEQUENCE_NUMBER_RE.search(stem):
+            return None
+        normalized = _SEQUENCE_NUMBER_RE.sub("#", stem)
+        if not any(ch.isalpha() for ch in normalized):
+            return None
+        return os.path.dirname(path).casefold(), normalized.casefold(), Path(path).suffix.lower()
 
 SYSTEM_DIR_NAMES = frozenset({
     "$RECYCLE.BIN",
@@ -147,16 +163,6 @@ def format_size(num_bytes: int) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024
     return f"{value:.1f} PiB"
-
-
-def sequence_key(path: str) -> tuple[str, str, str] | None:
-    """Return a key grouping frame files of one sequence, or None."""
-    stem = Path(path).stem
-    extension = Path(path).suffix.lower()
-    prefix = stem.rstrip("0123456789")
-    if prefix == stem:
-        return None
-    return (os.path.dirname(path).casefold(), prefix.casefold(), extension)
 
 
 def below_excluded_dir(rel_dir: str, levels: int) -> bool:

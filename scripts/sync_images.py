@@ -3,7 +3,8 @@
 
 Only PNG, JPG, JPEG, TIF, and TIFF files smaller than 20 MiB are copied. Python
 traverses the source tree; robocopy performs each folder transfer using native
-workers.
+workers. Frames of long numbered sequences (>100 images, also when the number is
+embedded such as ``project_0001_A.png``) are left behind as render bursts.
 
 Usage:
     python sync_images.py SRC DST --mode {all,final,manual} [--threads N] [--skip-dir PATH] [--dry-run]
@@ -31,8 +32,10 @@ try:
     from backend.app.file_rules import (
         ALLOWED_EXTENSIONS as _CENTRAL_ALLOWED,
         MAX_FILE_SIZE_MB as _CENTRAL_MAX_MB,
-        MAX_SEQUENCE_IMAGES as _CENTRAL_MAX_SEQ,  # noqa: F401 — imported to enforce centralisation
+        MAX_SEQUENCE_IMAGES as _CENTRAL_MAX_SEQ,
         EXCLUDED_DIR_NAMES as _CENTRAL_EXCLUDED,  # noqa: F401
+        filter_long_sequences as _CENTRAL_FILTER_LONG_SEQUENCES,
+        sequence_key as _CENTRAL_SEQUENCE_KEY,
     )
 
     ALLOWED_EXTS = frozenset(e.lower() for e in _CENTRAL_ALLOWED)
@@ -41,9 +44,38 @@ try:
     MAX_FILE_SIZE_MB = _CENTRAL_MAX_MB  # type: ignore[no-redef]
     MAX_SEQUENCE_IMAGES = _CENTRAL_MAX_SEQ  # type: ignore[no-redef]
     EXCLUDED_DIR_NAMES = _CENTRAL_EXCLUDED  # type: ignore[no-redef]
+    sequence_key = _CENTRAL_SEQUENCE_KEY  # type: ignore[no-redef]
+    filter_long_sequences = _CENTRAL_FILTER_LONG_SEQUENCES  # type: ignore[no-redef]
 except ImportError:
+    import re
+
     ALLOWED_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff"})
     MAX_COPY_SIZE_BYTES = 20 * 1024 * 1024
+    MAX_FILE_SIZE_MB = 20  # type: ignore[no-redef]
+    MAX_SEQUENCE_IMAGES = 100  # type: ignore[no-redef]
+    EXCLUDED_DIR_NAMES = frozenset()  # type: ignore[no-redef]
+    _SEQUENCE_NUMBER_RE = re.compile(r"\d+")
+
+    def sequence_key(path: str) -> tuple[str, str, str] | None:  # type: ignore[no-redef]
+        """Mirror of backend/app/file_rules.sequence_key (standalone fallback)."""
+        stem, suffix = os.path.splitext(os.path.basename(path))
+        if not _SEQUENCE_NUMBER_RE.search(stem):
+            return None
+        normalized = _SEQUENCE_NUMBER_RE.sub("#", stem)
+        if not any(ch.isalpha() for ch in normalized):
+            return None
+        return os.path.dirname(path).casefold(), normalized.casefold(), suffix.lower()
+
+    def filter_long_sequences(  # type: ignore[no-redef]
+        paths, max_images: int = MAX_SEQUENCE_IMAGES
+    ) -> set[str]:
+        """Mirror of backend/app/file_rules.filter_long_sequences."""
+        from collections import Counter
+
+        keys = {path: key for path, key in ((p, sequence_key(p)) for p in paths) if key is not None}
+        counts = Counter(keys.values())
+        return {path for path, key in keys.items() if counts[key] > max_images}
+
 SKIP_DIRS = frozenset({
     "$RECYCLE.BIN",
     "System Volume Information",
@@ -51,6 +83,10 @@ SKIP_DIRS = frozenset({
     ".Trashes",
     "__MACOSX",
 })
+
+# Keep explicit file lists well below the Windows command-line limit. robocopy
+# has no file-list option, so sequence-filtered folders are copied in chunks.
+ROBOCOPY_COMMAND_CHAR_BUDGET = 30000
 
 MODE_FOLDER_KEYWORDS = {
     "all": (),
@@ -107,6 +143,73 @@ def image_masks(mode: str, path_matches: bool) -> tuple[str, ...]:
     return ("*.png", "*.jpg", "*.jpeg", "*.tif", "*.tiff")
 
 
+def eligible_image_names(filenames, mode: str, path_matches: bool) -> list[str]:
+    """Return sorted image names robocopy would copy with ``image_masks``."""
+    names = []
+    for name in filenames:
+        base = Path(name)
+        if base.suffix.casefold() not in ALLOWED_EXTS:
+            continue
+        if mode == "manual" and not path_matches and "manual" not in base.stem.casefold():
+            continue
+        names.append(name)
+    return sorted(names)
+
+
+def robocopy_command(
+    source_dir,
+    destination_dir,
+    file_args,
+    threads: int,
+    dry_run: bool,
+) -> list[str]:
+    """Build the robocopy command for one folder (masks or explicit file names)."""
+    command = [
+        "robocopy",
+        robocopy_path(source_dir),
+        robocopy_path(destination_dir),
+        *file_args,
+        "/LEV:1",
+        f"/MAX:{MAX_COPY_SIZE_BYTES - 1}",
+        f"/MT:{max(1, min(128, threads))}",
+        "/R:1",
+        "/W:1",
+        "/COPY:DAT",
+        "/DCOPY:T",
+        "/FFT",
+        "/NP",
+        "/NFL",
+        "/NDL",
+        "/NJH",
+        "/NJS",
+    ]
+    if dry_run:
+        command.append("/L")
+    return command
+
+
+def chunk_file_args(
+    file_names,
+    base_length: int,
+    budget: int = ROBOCOPY_COMMAND_CHAR_BUDGET,
+) -> list[list[str]]:
+    """Split explicit file names into chunks that fit one robocopy command line."""
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    length = base_length
+    for name in file_names:
+        addition = len(name) + 1
+        if current and length + addition > budget:
+            chunks.append(current)
+            current = []
+            length = base_length
+        current.append(name)
+        length += addition
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def normalize_skip_dirs(skip_dirs: list[str]) -> frozenset[str]:
     """Return case-insensitive, source-relative paths for walk pruning."""
     posix_names = [path.replace("\\", "/") for path in skip_dirs]
@@ -160,43 +263,59 @@ def copy_matching_folders(
             continue
 
         folder = relative_dir.as_posix()
+        destination_dir = destination_base / relative_dir
+        dropped_frames = filter_long_sequences(
+            name for name in filenames if Path(name).suffix.casefold() in ALLOWED_EXTS
+        )
+        if dropped_frames:
+            kept = [
+                name
+                for name in eligible_image_names(filenames, mode, path_matches)
+                if name not in dropped_frames
+            ]
+            if not kept:
+                continue
+            base_length = len(
+                " ".join(robocopy_command(source_dir, destination_dir, [], threads, dry_run))
+            )
+            commands = [
+                robocopy_command(source_dir, destination_dir, chunk, threads, dry_run)
+                for chunk in chunk_file_args(kept, base_length)
+            ]
+        else:
+            commands = [
+                robocopy_command(
+                    source_dir,
+                    destination_dir,
+                    image_masks(mode, path_matches),
+                    threads,
+                    dry_run,
+                )
+            ]
+
         if folder != previous_folder:
             print(f"\rcopying folder: {folder}", end="", flush=True)
             previous_folder = folder
 
-        command = [
-            "robocopy",
-            robocopy_path(source_dir),
-            robocopy_path(destination_base / relative_dir),
-            *image_masks(mode, path_matches),
-            "/LEV:1",
-            f"/MAX:{MAX_COPY_SIZE_BYTES - 1}",
-            f"/MT:{max(1, min(128, threads))}",
-            "/R:1",
-            "/W:1",
-            "/COPY:DAT",
-            "/DCOPY:T",
-            "/FFT",
-            "/NP",
-            "/NFL",
-            "/NDL",
-            "/NJH",
-            "/NJS",
-        ]
-        if dry_run:
-            command.append("/L")
+        oserror = False
+        exit_code_error: int | None = None
+        for command in commands:
+            try:
+                result = subprocess.run(command, check=False)
+            except OSError as exc:
+                stats.errors.append(f"robocopy {folder}: {exc}")
+                oserror = True
+                break
+            if result.returncode >= 8:
+                exit_code_error = result.returncode
 
-        try:
-            result = subprocess.run(command, check=False)
-        except OSError as exc:
-            stats.failed += 1
-            stats.errors.append(f"robocopy {folder}: {exc}")
+        if oserror:
             continue
 
         stats.folders += 1
-        if result.returncode >= 8:
+        if exit_code_error is not None:
             stats.failed += 1
-            stats.errors.append(f"robocopy {folder}: exit code {result.returncode}")
+            stats.errors.append(f"robocopy {folder}: exit code {exit_code_error}")
 
     if previous_folder is not None:
         print()

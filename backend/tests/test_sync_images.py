@@ -161,6 +161,39 @@ def test_skip_dir_prunes_source_subfolder(tmp_path, monkeypatch):
     assert "archive" not in calls[0][1]
 
 
+def test_long_sequences_are_excluded_from_the_copy_list(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    project = src / "project" / "final"
+    for i in range(mod.MAX_SEQUENCE_IMAGES + 1):
+        _touch(project / f"shot_{i:04d}_A.png")
+    _touch(project / "hero.png")
+    calls = []
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda command, check: calls.append(command) or SimpleNamespace(returncode=0),
+    )
+
+    stats = mod.Stats()
+    mod.copy_matching_folders(src, dst, "all", 8, False, stats)
+
+    assert len(calls) == 1
+    file_args = [part for part in calls[0][3:] if part.endswith(".png")]
+    assert file_args == ["hero.png"]
+    assert stats.folders == 1 and stats.failed == 0
+
+
+def test_chunk_file_args_respects_command_budget():
+    names = [f"file_{i:04d}.png" for i in range(20)]
+
+    chunks = mod.chunk_file_args(names, base_length=100, budget=200)
+
+    assert sum(len(chunk) for chunk in chunks) == len(names)
+    assert len(chunks) > 1
+    assert all(len(" ".join(chunk)) + 100 <= 200 for chunk in chunks)
+
+
 def test_robocopy_failures_are_reported(tmp_path, monkeypatch):
     src = tmp_path / "src"
     _touch(src / "project" / "_final" / "render.png")

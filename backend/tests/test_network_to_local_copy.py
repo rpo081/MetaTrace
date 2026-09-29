@@ -45,6 +45,20 @@ def test_filter_images_drops_sequences_over_limit():
     assert not any(p in set(long_seq) for p in kept)
 
 
+def test_filter_images_drops_embedded_number_sequences_over_limit():
+    def frames(n, template="project_{:04d}_A.png"):
+        return [_p("src", "proj", template.format(i)) for i in range(n)]
+
+    long_seq = frames(150)                   # dropped: > MAX_SEQUENCE_IMAGES
+    short_seq = frames(100, "other_{:04d}_A.png")  # kept: exactly at limit
+
+    all_paths = long_seq + short_seq
+    kept = mod.filter_images(all_paths, all_paths, "src")
+
+    assert not any(p in set(long_seq) for p in kept)
+    assert [p for p in kept if p in set(short_seq)] == short_seq
+
+
 def test_filter_images_respects_excluded_dir_names_within_level_depth():
     # EXCLUDED_DIR_LEVELS = 2: only the last two directory levels are checked.
     inside = _p("src", "proj", "textures", "a.png")       # last level -> excluded

@@ -13,6 +13,7 @@ import numpy as np
 
 from . import db, embeddings, metadata
 from .checkpoint import _is_safe_rel_path
+from .file_rules import MAX_SEQUENCE_IMAGES, filter_long_sequences
 from .models.scan import DiskFile, ScanReport, sha256_file, snapshot_meta_to_disk_file as _snapshot_meta_to_disk_file
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,20 @@ SCAN_DECODE_MAX_SIDE = 512
 # ---------------------------------------------------------------------------
 # Inventory helpers (free functions)
 # ---------------------------------------------------------------------------
+
+def _exclude_long_sequences(inventory: dict) -> int:
+    """Drop frames of over-limit render sequences from a rel_path -> file inventory."""
+    dropped = filter_long_sequences(tuple(inventory))
+    if dropped:
+        log.info(
+            "excluding %d file(s) in image sequences longer than %d frames",
+            len(dropped),
+            MAX_SEQUENCE_IMAGES,
+        )
+        for rel_path in dropped:
+            inventory.pop(rel_path, None)
+    return len(dropped)
+
 
 def _walk_store(settings, pause=None) -> dict[str, DiskFile]:
     found: dict[str, DiskFile] = {}
@@ -47,6 +62,7 @@ def _walk_store(settings, pause=None) -> dict[str, DiskFile]:
                 continue
             rel = ap.relative_to(root).as_posix()
             found[rel] = DiskFile(rel, ap, st.st_size, st.st_mtime)
+    _exclude_long_sequences(found)
     return found
 
 
@@ -103,6 +119,7 @@ def _load_snapshot_inventory(settings, status: dict | None = None) -> dict[str, 
             continue
         disk[disk_file.rel_path] = disk_file
 
+    _exclude_long_sequences(disk)
     if not disk:
         log.warning("store snapshot %s contained no usable image entries", path.name)
         return None

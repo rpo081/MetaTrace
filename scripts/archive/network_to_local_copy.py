@@ -17,6 +17,7 @@ try:
         EXCLUDED_DIR_NAMES as _CENTRAL_EXCLUDED,
         MAX_FILE_SIZE_MB as _CENTRAL_MAX_MB,
         MAX_SEQUENCE_IMAGES as _CENTRAL_MAX_SEQ,
+        sequence_key as _CENTRAL_SEQUENCE_KEY,
     )
 
     EXTENSIONS = set(_CENTRAL_ALLOWED)
@@ -25,7 +26,10 @@ try:
     MAX_FILE_SIZE_MB = _CENTRAL_MAX_MB
     EXCLUDED_DIR_LEVELS = _CENTRAL_EXCLUDED_LEVELS
     EXCLUDED_SCAN_PATHS = set()
+    sequence_key = _CENTRAL_SEQUENCE_KEY
 except ImportError:
+    import re
+
     EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
     EXCLUDED_SCAN_PATHS = set()
     EXCLUDED_DIR_NAMES = {
@@ -36,6 +40,18 @@ except ImportError:
     # Dateien über diesem Limit (in MB) werden nicht kopiert; 0 = unbegrenzt.
     MAX_FILE_SIZE_MB = 20
     EXCLUDED_DIR_LEVELS = 2
+
+    _SEQUENCE_NUMBER_RE = re.compile(r"\d+")
+
+    def sequence_key(path):
+        """Mirror of backend/app/file_rules.sequence_key (standalone fallback)."""
+        stem, extension = os.path.splitext(os.path.basename(path))
+        if not _SEQUENCE_NUMBER_RE.search(stem):
+            return None
+        normalized = _SEQUENCE_NUMBER_RE.sub("#", stem)
+        if not any(ch.isalpha() for ch in normalized):
+            return None
+        return os.path.dirname(path).casefold(), normalized.casefold(), extension.lower()
 ROBOCOPY_THREADS = 32
 ROBOCOPY_PROCESSES = 8
 ROBOCOPY_RETRIES = 5
@@ -271,15 +287,6 @@ def below_excluded_dir(path, root):
         part.casefold() in EXCLUDED_DIR_NAMES
         for part in relative_dir.split(os.sep)[-EXCLUDED_DIR_LEVELS:]
     )
-
-
-def sequence_key(path):
-    """Return a key grouping frame files of one sequence, or None if unnumbered."""
-    stem, extension = os.path.splitext(os.path.basename(path))
-    prefix = stem.rstrip("0123456789")
-    if prefix == stem:
-        return None
-    return os.path.dirname(path).casefold(), prefix.casefold(), extension.lower()
 
 
 def filter_images(paths, all_paths, root):
